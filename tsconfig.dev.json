@@ -1,0 +1,5 @@
+{
+  "extends": "zotero-types/entries/sandbox/",
+  "include": ["src", "typings", "./*.mjs"],
+  "exclude": ["build", "addon", "_references", "_references-inactive", "_memories", "_memories-inactive", ".scaffold", "_links", "**/*-lintignore*", "**/*_lintignore*", "**/*-ignore*", "**/*_ignore*", "src/modules/examples.ts", "_ignores", "_development"]
+}
