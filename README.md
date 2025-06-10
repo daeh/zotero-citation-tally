@@ -86,7 +86,7 @@ Once installed, the plugin will automatically begin tracking citation counts for
 
 <summary>Common Issues</summary>
 
-- **No citation data found**: The plugin requires items to have DOIs, arXiv IDs, or other identifiers that databases can match. Journal articles, conference papers, and books with DOIs work best. Items like web pages, theses, or older publications without digital identifiers may not have citation data available in academic databases.
+- **No citation data found**: The plugin requires items to have DOIs, arXiv IDs, or other identifiers that databases can match. Journal articles, conference papers, and books with DOIs work best. Items like web pages, thesis, or older publications without digital identifiers may not have citation data available in academic databases.
 - **Rate limiting**: The plugin aims to be respectful of the databases that make citation information available by adaptively throttling request frequency and avoiding unnecessary requests. It starts with base delays (1-3 seconds) and automatically increases delays up to 10x when rate limits are detected, then gradually decreases on successful requests. Large batch updates may take time but will complete automatically. The plugin keeps track of items that do not appear in databases and avoids requesting them frequently, but will periodically check to see these items have been added.
 - **Network issues**: Ensure Zotero has internet access and your firewall isn't blocking requests to academic databases.
 
