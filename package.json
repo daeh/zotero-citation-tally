@@ -1,0 +1,55 @@
+{
+  "name": "zotero-citation-tally",
+  "version": "0.0.1",
+  "description": "Plugin that tallies citation counts for Zotero items",
+  "author": "Dae Houlihan <dev@daeh.info> (https://daeh.info)",
+  "license": "AGPL-3.0",
+  "type": "module",
+  "config": {
+    "addonName": "Citation Tally",
+    "addonID": "dev@daeh.info",
+    "addonRef": "citationtally",
+    "addonInstance": "CitationTally",
+    "prefsPrefix": "extensions.zotero.citationtally"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daeh/zotero-citation-tally.git"
+  },
+  "bugs": {
+    "url": "https://github.com/daeh/zotero-citation-tally/issues"
+  },
+  "homepage": "https://github.com/daeh/zotero-citation-tally#readme",
+  "scripts": {
+    "start": "zotero-plugin serve",
+    "build": "zotero-plugin build && tsc --noEmit",
+    "release": "zotero-plugin release",
+    "lint": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=production && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
+    "lint:check": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=production && prettier --config prettier.config.mjs --check . && eslint --config eslint.config.mjs .",
+    "lint:dev": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=development && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
+    "lint:repo": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=repo && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
+    "update-deps": "yarn set version stable && yarn upgrade-interactive",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "globals": "^16.2.0",
+    "zotero-plugin-toolkit": "^5.0.0"
+  },
+  "devDependencies": {
+    "@stylistic/eslint-plugin": "^4.4.1",
+    "@types/node": "^22.15.30",
+    "@typescript-eslint/eslint-plugin": "^8.33.1",
+    "@typescript-eslint/parser": "^8.33.1",
+    "eslint": "^9.28.0",
+    "eslint-config-prettier": "^10.1.5",
+    "eslint-import-resolver-typescript": "^4.4.3",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-prettier": "^5.4.1",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.33.1",
+    "zotero-plugin-scaffold": "^0.6.0",
+    "zotero-types": "^4.0.3"
+  },
+  "packageManager": "yarn@4.9.2"
+}
