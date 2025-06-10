@@ -1,0 +1,14 @@
+**/.git/
+**/.github/
+**/.vscode/
+**/.idea/
+**/build/
+**/dist/
+**/*.lock
+**/*-lock.yaml
+logs
+**/.yarn/
+**/node_modules/
+**/*_lintignore*
+**/*-lintignore*
+.scaffold
