@@ -1,0 +1,41 @@
+#########
+### specialized ignore patterns ###
+#########
+**/*-ignore/
+**/*-ignore-*
+**/*-ignore_*
+**/*-ignore.*
+**/*_ignore/
+**/*_ignore-*
+**/*_ignore_*
+**/*_ignore.*
+**/*-gitignore*
+**/*_gitignore*
+
+#########
+### generated directories ###
+#########
+node_modules
+.yarn
+
+#########
+### generated files ###
+#########
+!yarn.lock ### needed for cl workflow git hook
+tsconfig.tsbuildinfo
+
+#########
+### important ###
+#########
+.env
+
+#########
+### project specific patterns ###
+#########
+
+# Scaffold
+.env
+.env.example
+.scaffold
+build
+logs

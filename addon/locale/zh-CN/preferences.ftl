@@ -1,0 +1,13 @@
+pref-title = 引用计数
+pref-citation-databases = 引用数据库 (显示顺序)
+pref-database-instructions = 输入1-3个数据库，用逗号分隔：crossref, semanticscholar, inspire
+pref-validate-button = 验证
+pref-database-empty = 请输入至少一个数据库
+pref-database-duplicate = 发现重复的数据库
+pref-database-invalid = 无效的数据库：%s
+pref-database-count = 请输入1-3个数据库
+pref-database-valid = ✓ 数据库配置有效
+pref-color-settings = 显示选项
+pref-use-colors = 为不同数据库使用颜色
+pref-no-colors = 不使用颜色显示
+pref-help = { $name } Build { $version } { $time }
