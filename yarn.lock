@@ -785,18 +785,19 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@stylistic/eslint-plugin@npm:^4.4.1":
-  version: 4.4.1
-  resolution: "@stylistic/eslint-plugin@npm:4.4.1"
+"@stylistic/eslint-plugin@npm:^5.0.0":
+  version: 5.0.0
+  resolution: "@stylistic/eslint-plugin@npm:5.0.0"
   dependencies:
-    "@typescript-eslint/utils": "npm:^8.32.1"
-    eslint-visitor-keys: "npm:^4.2.0"
-    espree: "npm:^10.3.0"
+    "@eslint-community/eslint-utils": "npm:^4.7.0"
+    "@typescript-eslint/types": "npm:^8.34.1"
+    eslint-visitor-keys: "npm:^4.2.1"
+    espree: "npm:^10.4.0"
     estraverse: "npm:^5.3.0"
     picomatch: "npm:^4.0.2"
   peerDependencies:
     eslint: ">=9.0.0"
-  checksum: 10c0/94160bfc172a3934dd35be87887f43f7e3ffe9d1645096860a4e4c61877bb0fb62eb20a90e50ad74767ee794ed10f334f7165952cf9bcbd8bae6b80dc10c0d62
+  checksum: 10c0/3827a350a12456dd2d02d53a01377a5848ea7ecf66e23671c8ec8e5f41173b68decfd462022bdb5042fee0cf1c2f1496ada7042e240dc6d3ba4bece414142d0f
   languageName: node
   linkType: hard
 
@@ -1122,7 +1123,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@typescript-eslint/utils@npm:8.34.1, @typescript-eslint/utils@npm:^8.32.1":
+"@typescript-eslint/utils@npm:8.34.1":
   version: 8.34.1
   resolution: "@typescript-eslint/utils@npm:8.34.1"
   dependencies:
@@ -2249,7 +2250,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"eslint-visitor-keys@npm:^4.2.0, eslint-visitor-keys@npm:^4.2.1":
+"eslint-visitor-keys@npm:^4.2.1":
   version: 4.2.1
   resolution: "eslint-visitor-keys@npm:4.2.1"
   checksum: 10c0/fcd43999199d6740db26c58dbe0c2594623e31ca307e616ac05153c9272f12f1364f5a0b1917a8e962268fdecc6f3622c1c2908b4fcc2e047a106fe6de69dc43
@@ -2318,7 +2319,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"espree@npm:^10.0.1, espree@npm:^10.3.0, espree@npm:^10.4.0":
+"espree@npm:^10.0.1, espree@npm:^10.4.0":
   version: 10.4.0
   resolution: "espree@npm:10.4.0"
   dependencies:
@@ -4417,7 +4418,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "zotero-citation-tally@workspace:."
   dependencies:
-    "@stylistic/eslint-plugin": "npm:^4.4.1"
+    "@stylistic/eslint-plugin": "npm:^5.0.0"
     "@types/node": "npm:^24.0.3"
     "@typescript-eslint/eslint-plugin": "npm:^8.34.1"
     "@typescript-eslint/parser": "npm:^8.34.1"
