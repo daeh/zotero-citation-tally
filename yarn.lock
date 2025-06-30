@@ -4433,7 +4433,7 @@ __metadata:
     typescript-eslint: "npm:^8.35.0"
     zotero-plugin-scaffold: "npm:^0.6.1"
     zotero-plugin-toolkit: "npm:^5.0.1"
-    zotero-types: "npm:^4.0.5-beta.0"
+    zotero-types: "npm:^4.0.5"
   languageName: unknown
   linkType: soft
 
@@ -4477,14 +4477,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zotero-types@npm:^4.0.5-beta.0":
-  version: 4.0.5-beta.0
-  resolution: "zotero-types@npm:4.0.5-beta.0"
+"zotero-types@npm:^4.0.5":
+  version: 4.0.5
+  resolution: "zotero-types@npm:4.0.5"
   dependencies:
     "@types/bluebird": "npm:^3.5.42"
     "@types/react": "npm:^18.3.1"
     epubjs: "npm:^0.3.93"
     pdfjs-dist: "npm:^4.10.0"
-  checksum: 10c0/3f992864f4a85bc0e03dd0b38184714b86ef671ffc95fa3b92dd1a507ae5b9acf3e68490ab76af698b4e85c0f3b16f5826f924c8b85cfbd842bf03ec71236137
+  checksum: 10c0/ac7ec532a6c7532afd009eed977264a13f07972301b5bf54e709d4741b4306466093f2819cd166c453f2a99eea51d99c1b6e9590a93effca219dc56e02df4f73
   languageName: node
   linkType: hard
