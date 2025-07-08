@@ -331,9 +331,16 @@ class Helpers {
       return { type: 'doi', id: doi }
     }
 
-    // Check for arXiv ID in Extra field
+    // Check for DOI and arXiv ID in Extra field
     const extra = item.getField('extra')
     if (extra) {
+      // This regex catches 99% of Crossref DOIs
+      // See: https://www.crossref.org/blog/dois-and-matching-regular-expressions/
+      const doiMatch = /DOI:\s*(10.\d{4,9}\/[-._;()/:A-Z0-9]+)/i.exec(extra)
+      if (doiMatch) {
+        return { type: 'doi', id: doiMatch[1] }
+      }
+
       const arXivMatch = /arXiv:\s*([\w.-]+\/\d+|\d+\.\d+)/i.exec(extra)
       if (arXivMatch) {
         return { type: 'arxiv', id: arXivMatch[1] }
