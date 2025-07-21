@@ -36,19 +36,19 @@
     "zotero-plugin-toolkit": "^5.0.1"
   },
   "devDependencies": {
-    "@stylistic/eslint-plugin": "^5.1.0",
-    "@types/node": "^24.0.14",
+    "@stylistic/eslint-plugin": "^5.2.1",
+    "@types/node": "^24.0.15",
     "@typescript-eslint/eslint-plugin": "^8.37.0",
     "@typescript-eslint/parser": "^8.37.0",
     "eslint": "^9.31.0",
-    "eslint-config-prettier": "^10.1.5",
+    "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.4",
     "eslint-plugin-import": "^2.32.0",
-    "eslint-plugin-prettier": "^5.5.1",
+    "eslint-plugin-prettier": "^5.5.3",
     "prettier": "^3.6.2",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.37.0",
-    "zotero-plugin-scaffold": "0.7.0",
+    "zotero-plugin-scaffold": "0.7.2",
     "zotero-types": "^4.0.5"
   },
   "packageManager": "yarn@4.9.2"
