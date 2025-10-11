@@ -1204,7 +1204,7 @@ class UIRegistrar {
           if (idx > 0) {
             const separator = doc.createElement('span')
             separator.innerText = ' | '
-            separator.style.color = '#666'
+            separator.style.opacity = '0.25'
             span.appendChild(separator)
           }
 
