@@ -73,6 +73,9 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   // Register retally outdated citations menubar item
   UIRegistrar.registerRetallyCitationsMenuItem()
 
+  // Register theme change observers to update column colors
+  UIRegistrar.registerThemeObservers()
+
   // await Zotero.Promise.delay(1000)
 
   popupWin.changeLine({
@@ -91,6 +94,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 
 function onShutdown(): void {
   ztoolkit.unregisterAll()
+  UIRegistrar.unregisterThemeObservers()
   addon.data.dialog?.window?.close()
   // Remove addon object
   addon.data.alive = false

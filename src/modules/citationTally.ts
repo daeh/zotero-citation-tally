@@ -303,11 +303,157 @@ function getOperationName(key: string): string {
   return getString(nameMap[key] || key)
 }
 
-// Database colors
-const databaseColors: Record<string, string> = {
+// Database colors for dark theme (default)
+const databaseColorsDark: Record<string, string> = {
   crossref: '#1a73e8', // Blue
   inspire: '#0f9d58', // Green
   semanticscholar: '#ea4335', // Red
+}
+
+// Database colors for light theme (higher contrast)
+const databaseColorsLight: Record<string, string> = {
+  crossref: '#000000', // Black
+  inspire: '#0f9d58', // Green
+  semanticscholar: '#cc0000', // Red
+}
+
+/**
+ * Detect if Zotero is using a light color scheme
+ * @returns true if light mode, false if dark mode
+ */
+function isLightMode(): boolean {
+  try {
+    // Try Zotero's theme preference first (Zotero 7+)
+    const zoteroTheme = Zotero.Prefs.get('theme', true) as string | undefined
+
+    if (zoteroTheme === 'light') {
+      return true
+    }
+    if (zoteroTheme === 'dark') {
+      return false
+    }
+
+    // If theme is 'system' or undefined, check system preference
+    const win = Zotero.getMainWindow()
+    if (win) {
+      const mediaQuery = win.matchMedia?.('(prefers-color-scheme: dark)')
+      if (mediaQuery) {
+        return !mediaQuery.matches
+      }
+
+      // Fallback: check document background color
+      const docEl = win.document?.documentElement
+      if (docEl) {
+        const bgColor = win.getComputedStyle?.(docEl)?.backgroundColor
+        if (bgColor) {
+          // Parse RGB and check if it's dark (low luminance)
+          const rgb = bgColor.match(/\d+/g)
+          if (rgb && rgb.length >= 3) {
+            const luminance = (0.299 * parseInt(rgb[0]) + 0.587 * parseInt(rgb[1]) + 0.114 * parseInt(rgb[2])) / 255
+            return luminance > 0.5 // Light if luminance > 0.5
+          }
+        }
+      }
+    }
+  } catch (e) {
+    ztoolkit.log(`Theme detection error: ${String(e)}`)
+  }
+
+  // Default to dark mode colors if detection fails
+  return false
+}
+
+/**
+ * Get the appropriate database colors based on current theme
+ * @returns Database color mapping for current theme
+ */
+function getDatabaseColors(): Record<string, string> {
+  return isLightMode() ? databaseColorsLight : databaseColorsDark
+}
+
+/**
+ * Refresh the items tree to update column colors
+ */
+function refreshItemsTree(): void {
+  try {
+    // Refresh all item tree columns to pick up new colors
+    const manager = Zotero.ItemTreeManager as { refreshColumns?: () => void }
+    manager.refreshColumns?.()
+    ztoolkit.log('Refreshed columns')
+  } catch (e) {
+    ztoolkit.log(`Failed to refresh columns: ${String(e)}`)
+  }
+}
+
+// Store references for cleanup
+let themeMediaQueryList: MediaQueryList | null = null
+let themePrefObserverId: symbol | null = null
+let colorPrefObserverId: symbol | null = null
+
+/**
+ * Register observers for theme and color preference changes
+ * Listens to Zotero's theme preference, system theme, and plugin color preference
+ */
+function registerThemeObservers(): void {
+  try {
+    // Observe Zotero's theme preference changes
+    themePrefObserverId = Zotero.Prefs.registerObserver(
+      'theme',
+      () => {
+        ztoolkit.log('Zotero theme preference changed')
+        refreshItemsTree()
+      },
+      true,
+    )
+
+    // Observe plugin's useColors preference changes (need full pref name)
+    colorPrefObserverId = Zotero.Prefs.registerObserver(
+      `${addon.data.config.prefsPrefix}.useColors`,
+      () => {
+        ztoolkit.log('Plugin color preference changed')
+        refreshItemsTree()
+      },
+      true,
+    )
+
+    // Observe system theme changes via matchMedia
+    const win = Zotero.getMainWindow()
+    if (win?.matchMedia) {
+      const mql = win.matchMedia('(prefers-color-scheme: dark)')
+      if (mql) {
+        themeMediaQueryList = mql
+        mql.addEventListener('change', () => {
+          ztoolkit.log('System theme changed')
+          refreshItemsTree()
+        })
+      }
+    }
+
+    ztoolkit.log('Theme and color observers registered')
+  } catch (e) {
+    ztoolkit.log(`Failed to register theme observers: ${String(e)}`)
+  }
+}
+
+/**
+ * Unregister theme observers (call on shutdown)
+ */
+function unregisterThemeObservers(): void {
+  try {
+    if (themePrefObserverId) {
+      Zotero.Prefs.unregisterObserver(themePrefObserverId)
+      themePrefObserverId = null
+    }
+    if (colorPrefObserverId) {
+      Zotero.Prefs.unregisterObserver(colorPrefObserverId)
+      colorPrefObserverId = null
+    }
+    // MediaQueryList listeners are automatically cleaned up when the window closes
+    themeMediaQueryList = null
+    ztoolkit.log('Theme observers unregistered')
+  } catch (e) {
+    ztoolkit.log(`Failed to unregister theme observers: ${String(e)}`)
+  }
 }
 
 function insertBeforeMatch(arr: string[], pattern: RegExp, newItem: string): void {
@@ -1218,7 +1364,7 @@ class UIRegistrar {
           const countSpan = doc.createElement('span')
           countSpan.innerText = count
           if (useColors) {
-            countSpan.style.color = databaseColors[dataToUse.databases[idx]] || '#000'
+            countSpan.style.color = getDatabaseColors()[dataToUse.databases[idx]] || '#000'
             countSpan.style.fontWeight = '500'
           }
           span.appendChild(countSpan)
@@ -1253,6 +1399,20 @@ class UIRegistrar {
         }
       },
     })
+  }
+
+  /**
+   * Register observers for theme changes to update column colors
+   */
+  static registerThemeObservers() {
+    registerThemeObservers()
+  }
+
+  /**
+   * Unregister theme observers (call on shutdown)
+   */
+  static unregisterThemeObservers() {
+    unregisterThemeObservers()
   }
 
   /**

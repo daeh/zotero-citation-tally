@@ -1,6 +1,6 @@
 {
   "name": "zotero-citation-tally",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Plugin that tallies citation counts for Zotero items",
   "author": "Dae Houlihan <dev@daeh.info> (https://daeh.info)",
   "license": "AGPL-3.0",

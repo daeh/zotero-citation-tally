@@ -12,3 +12,4 @@ logs
 **/*_lintignore*
 **/*-lintignore*
 .scaffold
+*.code-workspace

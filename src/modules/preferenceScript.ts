@@ -84,7 +84,15 @@ function bindPrefEvents() {
     autoUpdateRadioGroup.addEventListener('command', updateCutoffState)
   }
 
-  // Radio buttons with preference attribute should handle themselves automatically
+  // Add listener for color preference changes to refresh columns immediately
+  const useColorsRadioGroup = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-useColors`)
+  if (useColorsRadioGroup) {
+    useColorsRadioGroup.addEventListener('command', () => {
+      // Refresh the item tree columns to apply new color settings
+      const manager = Zotero.ItemTreeManager as { refreshColumns?: () => void }
+      manager.refreshColumns?.()
+    })
+  }
 }
 
 interface Validation {

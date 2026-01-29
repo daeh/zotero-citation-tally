@@ -66,13 +66,6 @@
     }
   },
   "extensions": {
-    "recommendations": [
-      "arcanis.vscode-zipfs",
-      "bmalehorn.shell-syntax",
-      "dbaeumer.vscode-eslint",
-      "esbenp.prettier-vscode",
-      "redhat.vscode-yaml",
-      "macabeus.vscode-fluent"
-    ]
+    "recommendations": ["arcanis.vscode-zipfs", "bmalehorn.shell-syntax", "dbaeumer.vscode-eslint", "esbenp.prettier-vscode", "redhat.vscode-yaml", "macabeus.vscode-fluent"]
   }
 }
