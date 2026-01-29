@@ -583,7 +583,7 @@ class DBInterface {
    */
   static async getCrossrefCountEnhanced(item: Zotero.Item): Promise<LookupResult> {
     const identifier = Helpers.getItemIdentifier(item)
-    if (!identifier || identifier.type !== 'doi') {
+    if (identifier?.type !== 'doi') {
       ztoolkit.log('Citation debug - No DOI found for item:', item.id)
       return { count: -1, status: 'no_identifier', message: 'No DOI found' }
     }
@@ -897,6 +897,13 @@ class DBInterface {
 const notifierCallback = {
   notify: function (event: string, type: string, ids: number[] | string[], extraData: any) {
     if (event === 'add' && type === 'item') {
+      // Check if fetching on add is enabled
+      const fetchOnAdd = getPref('fetchOnAdd')
+      if (fetchOnAdd !== 'true') {
+        ztoolkit.log('Fetch on add disabled, skipping citation fetch for new items')
+        return
+      }
+
       const items = ids
         .map((id) => Zotero.Items.get(id as number))
         .filter((item) => !item.isFeedItem && item.isRegularItem())

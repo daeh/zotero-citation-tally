@@ -2,7 +2,7 @@
 
 # Citation Tally
 
-[![zotero target version](https://img.shields.io/badge/Zotero-7-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org) [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
+[![zotero target version](https://img.shields.io/badge/Zotero-7_%7C_8-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org) [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 **_Displays citation counts for Zotero library items._**
 
@@ -24,7 +24,7 @@ Please post any bugs, questions, or feature requests in the [GitHub issues](http
 ## Installation
 
 - Download the plugin (the `.xpi` file) from the [latest release](https://github.com/daeh/zotero-citation-tally/releases/latest)
-- Open Zotero (version 7.x)
+- Open Zotero (version 7.x or 8.x)
 - From `Tools -> Plugins`
 - Select `Install Plugin From File...` from the gear icon ⛭
 - Choose the `.xpi` file you downloaded (e.g. `citation-tally.xpi`)

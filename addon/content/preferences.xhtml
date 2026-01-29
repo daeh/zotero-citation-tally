@@ -7,7 +7,7 @@
     type="text/css"
     href="chrome://__addonRef__/content/preferences.css" />
 </linkset>
-<vbox onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window });">
+<vbox onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })">
   <groupbox>
     <label
       value="Citation Databases"
@@ -29,7 +29,7 @@
             id="zotero-prefpane-__addonRef__-validate-databases"
             label="Validate"
             style="margin-left: 10px"
-            oncommand="Zotero.__addonInstance__.hooks.onPrefsEvent('validateDatabases', { window });" />
+            oncommand="Zotero.__addonInstance__.hooks.onPrefsEvent('validateDatabases', { window })" />
         </hbox>
         <html:div
           id="zotero-prefpane-__addonRef__-database-status"
@@ -43,7 +43,19 @@
       style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
     <html:div class="__addonRef__-pref-options-div">
       <groupbox>
-        <description>Automatically update citation tallies for items in your library</description>
+        <description>Automatically fetch citation tallies for new items</description>
+        <radiogroup
+          id="zotero-prefpane-__addonRef__-fetchOnAdd"
+          preference="fetchOnAdd">
+          <radio
+            label="Fetch tallies when items are added"
+            value="true" />
+          <radio
+            label="Don't fetch tallies for new items"
+            value="false" />
+        </radiogroup>
+
+        <description style="margin-top: 8px">Automatically update citation tallies for items in your library</description>
         <radiogroup
           id="zotero-prefpane-__addonRef__-autoUpdate"
           preference="autoUpdate">
@@ -51,7 +63,7 @@
             label="Don't auto-update"
             value="never" />
           <radio
-            label="Auto-update"
+            label="Auto-update on startup"
             value="startup" />
         </radiogroup>
 

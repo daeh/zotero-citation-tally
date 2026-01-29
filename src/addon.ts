@@ -11,6 +11,7 @@ class Addon {
     config: typeof config
     // Env type, see build.js
     env: 'development' | 'production'
+    initialized?: boolean
     ztoolkit: ZToolkit
     locale?: {
       current: any
@@ -32,6 +33,7 @@ class Addon {
       alive: true,
       config,
       env: __env__,
+      initialized: false,
       ztoolkit: createZToolkit(),
     }
     this.hooks = hooks

@@ -38,6 +38,10 @@ export default defineConfig({
     ],
   },
 
+  test: {
+    waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
+  },
+
   // For detailed logging, uncomment:
   // logLevel: "trace",
 })

@@ -9,6 +9,7 @@ declare namespace _ZoteroTypes {
     PluginPrefsMap: {
       "databaseOrderExposed": string;
       "databaseOrder": string;
+      "fetchOnAdd": string;
       "autoUpdate": string;
       "autoUpdateCutoff": string;
       "useColors": string;
