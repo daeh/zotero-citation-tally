@@ -1,5 +1,14 @@
 import { startAutomaticUpdate } from './modules/citationAutoupdate'
 import { BasicRegistrar, scheduleMonthlyCleanup, UIRegistrar, UX } from './modules/citationTally'
+/* PUBIGNORE 
+import {
+  BasicExampleFactory,
+  HelperExampleFactory,
+  KeyExampleFactory,
+  PromptExampleFactory,
+  UIExampleFactory,
+} from './modules/examples'
+*/
 import { registerPrefsScripts, validateDatabaseOrder } from './modules/preferenceScript'
 import { getString, initLocale } from './utils/locale'
 // import { getPref } from './utils/prefs'
@@ -49,6 +58,8 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   // @ts-ignore This is a moz feature
   win.MozXULElement.insertFTLIfNeeded(`${addon.data.config.addonRef}-mainWindow.ftl`)
+  // @ts-ignore This is a moz feature
+  win.MozXULElement.insertFTLIfNeeded(`${addon.data.config.addonRef}-addon.ftl`)
 
   const popupWin = new ztoolkit.ProgressWindow(addon.data.config.addonName, {
     closeOnClick: true,
@@ -61,11 +72,19 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     })
     .show()
 
-  await Zotero.Promise.delay(1000)
+  await new Promise((resolve) => setTimeout(resolve, 1000))
   popupWin.changeLine({
     progress: 30,
     text: getString('startup-progress', { args: { percent: 30, message: getString('startup-begin') } }),
   })
+
+  // UIExampleFactory.registerStyleSheet(win) // PUBIGNORE
+
+  // UIExampleFactory.registerRightClickMenuItem() // PUBIGNORE
+
+  // UIExampleFactory.registerRightClickMenuPopup(win) // PUBIGNORE
+
+  // UIExampleFactory.registerWindowMenuWithSeparator() // PUBIGNORE
 
   // Register citation count update menu item
   UIRegistrar.registerCitationCountMenuItem()
@@ -75,6 +94,12 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   // Register theme change observers to update column colors
   UIRegistrar.registerThemeObservers()
+
+  // PromptExampleFactory.registerNormalCommandExample() // PUBIGNORE
+
+  // PromptExampleFactory.registerAnonymousCommandExample(win) // PUBIGNORE
+
+  // PromptExampleFactory.registerConditionalCommandExample() // PUBIGNORE
 
   // await Zotero.Promise.delay(1000)
 
@@ -102,6 +127,22 @@ function onShutdown(): void {
   delete Zotero[addon.data.config.addonInstance]
 }
 
+/** PUBIGNORE
+ * This function is just an example of dispatcher for Notify events.
+ * Any operations should be placed in a function to keep this function clear.
+ */
+/* PUBIGNORE
+async function onNotify(event: string, type: string, ids: (string | number)[], extraData: Record<string, any>) {
+  // Add code to the corresponding notify type
+  ztoolkit.log('notify', event, type, ids, extraData)
+  if (event == 'select' && type == 'tab' && extraData[ids[0]].type == 'reader') {
+    BasicExampleFactory.exampleNotifierCallback()
+  } else {
+    return
+  }
+}
+*/
+
 /**
  * Dispatcher for Preference UI events.
  * Any operations should be placed in a function to keep this function clear.
@@ -121,8 +162,41 @@ async function onPrefsEvent(type: string, data: Record<string, any>) {
   }
 }
 
+/* PUBIGNORE 
+function onShortcuts(type: string) {
+  switch (type) {
+    case 'larger':
+      KeyExampleFactory.exampleShortcutLargerCallback()
+      break
+    case 'smaller':
+      KeyExampleFactory.exampleShortcutSmallerCallback()
+      break
+    default:
+      break
+  }
+  return
+}
+*/
+
 function onDialogEvents(type: string) {
   switch (type) {
+    /* PUBIGNORE 
+    case 'dialogExample':
+      HelperExampleFactory.dialogExample()
+      break
+    case 'clipboardExample':
+      HelperExampleFactory.clipboardExample()
+      break
+    case 'filePickerExample':
+      HelperExampleFactory.filePickerExample()
+      break
+    case 'progressWindowExample':
+      HelperExampleFactory.progressWindowExample()
+      break
+    case 'vtableExample':
+      HelperExampleFactory.vtableExample()
+      break
+    */
     case 'updateCitationCounts':
       UX.updateSelectedItemsCitationCounts()
       break
@@ -143,6 +217,8 @@ export default {
   onShutdown,
   onMainWindowLoad,
   onMainWindowUnload,
+  // onNotify, // PUBIGNORE
   onPrefsEvent,
+  // onShortcuts, // PUBIGNORE
   onDialogEvents,
 }

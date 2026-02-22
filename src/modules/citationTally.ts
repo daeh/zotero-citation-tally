@@ -1,4 +1,4 @@
-import { getString } from '../utils/locale'
+import { getLocaleID, getString } from '../utils/locale'
 import { getPref, setPref } from '../utils/prefs'
 
 // Default rate limits per database (in milliseconds)
@@ -1419,32 +1419,29 @@ class UIRegistrar {
    * Register a context menu item to update citation counts for selected items
    */
   static registerCitationCountMenuItem() {
-    const menuIcon = 'chrome://zotero/skin/toolbar-advanced-search.png'
-
-    // context menu item for updating citation counts
-    ztoolkit.Menu.register('item', {
-      tag: 'menuitem',
-      id: 'zotero-itemmenu-update-citation-counts',
-      label: getString('menuitem-update-citation-tallies'),
-      commandListener: (ev) => addon.hooks.onDialogEvents('updateCitationCounts'),
-      icon: menuIcon,
-      // Only show menu item when there are valid items that can be updated
-      getVisibility: () => {
-        try {
-          const zoteroPane = Zotero.getActiveZoteroPane()
-          if (!zoteroPane) return false
-
-          const selectedItems = zoteroPane.getSelectedItems()
-          if (!selectedItems || selectedItems.length === 0) return false
-
-          // Check if any selected items are regular items (not attachments, notes, etc.)
-          const hasRegularItems = selectedItems.some((item) => item.isRegularItem())
-          return hasRegularItems
-        } catch (error) {
-          // If there's an error checking, don't show the menu item
-          return false
-        }
-      },
+    ;(Zotero as any).MenuManager.registerMenu({
+      menuID: `${addon.data.config.addonID}-update-citations`,
+      pluginID: addon.data.config.addonID,
+      target: 'main/library/item',
+      menus: [
+        {
+          menuType: 'menuitem',
+          l10nID: getLocaleID('menuitem-update-citation-tallies'),
+          icon: 'chrome://zotero/skin/toolbar-advanced-search.png',
+          onShowing: () => {
+            try {
+              const zoteroPane = Zotero.getActiveZoteroPane()
+              if (!zoteroPane) return false
+              const selectedItems = zoteroPane.getSelectedItems()
+              if (!selectedItems || selectedItems.length === 0) return false
+              return selectedItems.some((item) => item.isRegularItem())
+            } catch {
+              return false
+            }
+          },
+          onCommand: () => addon.hooks.onDialogEvents('updateCitationCounts'),
+        },
+      ],
     })
   }
 
@@ -1452,17 +1449,17 @@ class UIRegistrar {
    * Register a menubar item to retally outdated item citations
    */
   static registerRetallyCitationsMenuItem() {
-    // Add separator before menu item
-    ztoolkit.Menu.register('menuTools', {
-      tag: 'menuseparator',
-    })
-
-    // Register in Tools menu
-    ztoolkit.Menu.register('menuTools', {
-      tag: 'menuitem',
-      id: 'zotero-toolsmenu-retally-outdated-citations',
-      label: getString('menuitem-retally-outdated-citations'),
-      oncommand: "Zotero.__addonInstance__.hooks.onDialogEvents('retallyOutdatedCitations')",
+    ;(Zotero as any).MenuManager.registerMenu({
+      menuID: `${addon.data.config.addonID}-retally-citations`,
+      pluginID: addon.data.config.addonID,
+      target: 'main/menubar/tools',
+      menus: [
+        {
+          menuType: 'menuitem',
+          l10nID: getLocaleID('menuitem-retally-outdated-citations'),
+          onCommand: () => addon.hooks.onDialogEvents('retallyOutdatedCitations'),
+        },
+      ],
     })
   }
 }
