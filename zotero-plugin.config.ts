@@ -1,5 +1,5 @@
 import { defineConfig } from 'zotero-plugin-scaffold'
-import pkg from './package.json'
+import pkg from './package.json' with { type: 'json' }
 
 export default defineConfig({
   source: ['src', 'addon'],
@@ -32,7 +32,7 @@ export default defineConfig({
           __env__: `"${process.env.NODE_ENV}"`,
         },
         bundle: true,
-        target: 'firefox115',
+        target: 'firefox140',
         outfile: `.scaffold/build/addon/content/scripts/${pkg.config.addonRef}.js`,
       },
     ],

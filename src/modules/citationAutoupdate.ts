@@ -99,12 +99,13 @@ function isItemIgnoredForAutoupdate(itemId: number): boolean {
 
 // Operation display names (lazy-loaded to avoid startup issues)
 function getOperationName(key: string): string {
-  const nameMap: Record<string, string> = {
+  const nameMap = {
     crossref: 'database-crossref',
     inspire: 'database-inspire',
     semanticscholar: 'database-semanticscholar',
-  }
-  return getString(nameMap[key] || key)
+  } as const
+  const fluentId = nameMap[key as keyof typeof nameMap]
+  return fluentId ? getString(fluentId) : key
 }
 
 // Automatic update state

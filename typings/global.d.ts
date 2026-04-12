@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/consistent-type-imports */
 declare const _globalThis: {
   [key: string]: any
   Zotero: _ZoteroTypes.Zotero
