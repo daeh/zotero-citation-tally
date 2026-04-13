@@ -22,12 +22,13 @@
   "homepage": "https://github.com/daeh/zotero-citation-tally#readme",
   "scripts": {
     "start": "zotero-plugin serve",
-    "build": "zotero-plugin build && tsc --noEmit",
+    "build": "zotero-plugin build && tsc --noEmit && node utils/patch-update-json.mjs",
     "release": "zotero-plugin release",
-    "lint": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=production && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
-    "lint:check": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=production && prettier --config prettier.config.mjs --check . && eslint --config eslint.config.mjs .",
-    "lint:dev": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=development && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
-    "lint:repo": "ESLINT_USE_FLAT_CONFIG=true && NODE_ENV=repo && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
+    "lint": "NODE_ENV=production && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
+    "lint:check": "NODE_ENV=production && prettier --config prettier.config.mjs --check . && eslint --config eslint.config.mjs .",
+    "lint:dev": "NODE_ENV=development && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
+    "lint:repo": "NODE_ENV=repo && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
+    "scrub": "rm -rf .yarn node_modules yarn.lock .scaffold tsconfig.tsbuildinfo",
     "update-deps": "yarn set version stable && yarn upgrade-interactive",
     "test": "zotero-plugin test"
   },
@@ -35,16 +36,20 @@
     "zotero-plugin-toolkit": "5.1.2"
   },
   "devDependencies": {
-    "@stylistic/eslint-plugin": "^5.9.0",
-    "@types/node": "^25.3.0",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@types/node": "^25.6.0",
     "@zotero-plugin/eslint-config": "^0.6.9",
     "eslint": "^10.2.0",
     "eslint-import-resolver-typescript": "^4.4.4",
     "eslint-plugin-import": "^2.32.0",
-    "prettier": "^3.8.1",
+    "prettier": "^3.8.2",
     "typescript": "^6.0.2",
-    "zotero-plugin-scaffold": "^0.8.5",
-    "zotero-types": "4.1.0-beta.2"
+    "zotero-plugin-scaffold": "^0.8.6",
+    "zotero-types": "4.1.2"
+  },
+  "resolutions": {
+    "pdfjs-dist": "npm:^4.10.0",
+    "epubjs": "npm:^0.3.93"
   },
   "packageManager": "yarn@4.13.0"
 }

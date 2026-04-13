@@ -2,7 +2,7 @@
 
 # Citation Tally
 
-[![zotero target version](https://img.shields.io/badge/Zotero-8_%7C_9-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org) [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
+[![zotero target version](https://img.shields.io/badge/Zotero-9-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org) [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 **_Displays citation counts for Zotero library items._**
 
@@ -24,11 +24,16 @@ Please post any bugs, questions, or feature requests in the [GitHub issues](http
 ## Installation
 
 - Download the plugin (the `.xpi` file) from the [latest release](https://github.com/daeh/zotero-citation-tally/releases/latest)
-- Open Zotero (version 8.x or 9.x)
+- Open Zotero
 - From `Tools -> Plugins`
 - Select `Install Plugin From File...` from the gear icon ⛭
 - Choose the `.xpi` file you downloaded (e.g. `citation-tally.xpi`)
 - Restart Zotero
+
+> [!NOTE]
+> The last release with support for Zotero 7 was [`v0.0.11`](https://github.com/daeh/zotero-citation-tally/releases/tag/v0.0.11).
+>
+> The last release with support for Zotero 8 was [`v0.0.12`](https://github.com/daeh/zotero-citation-tally/releases/tag/v0.0.12).
 
 ## Setup and Configuration
 
