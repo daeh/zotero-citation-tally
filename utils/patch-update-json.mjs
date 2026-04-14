@@ -1,26 +1,26 @@
 /**
  * Append legacy update entries to the scaffold-generated update JSON so older Zotero versions auto-update to the last compatible release.
  *
- * Patches whichever of update.json / update-beta.json exists in .scaffold/build/. 
+ * Patches whichever of update.json / update-beta.json exists in .scaffold/build/.
  * Runs after `zotero-plugin build`.
  */
 
+import console from 'node:console'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import process from 'node:process'
 
 const LEGACY_ENTRIES = [
   {
     version: '0.0.12',
-    update_link:
-      'https://github.com/daeh/zotero-citation-tally/releases/download/v0.0.12/citation-tally.xpi',
+    update_link: 'https://github.com/daeh/zotero-citation-tally/releases/download/v0.0.12/citation-tally.xpi',
     applications: {
       zotero: { strict_min_version: '7.999', strict_max_version: '8.*' },
     },
   },
   {
     version: '0.0.11',
-    update_link:
-      'https://github.com/daeh/zotero-citation-tally/releases/download/v0.0.11/citation-tally.xpi',
+    update_link: 'https://github.com/daeh/zotero-citation-tally/releases/download/v0.0.11/citation-tally.xpi',
     applications: {
       zotero: { strict_min_version: '6.999', strict_max_version: '7.*' },
     },
