@@ -66,6 +66,21 @@ function bindPrefEvents() {
     })
   }
 
+  const semanticScholarApiKeyElement = window.document?.querySelector(
+    `#zotero-prefpane-${config.addonRef}-semanticScholarApiKey`,
+  )
+
+  if (semanticScholarApiKeyElement) {
+    ;(semanticScholarApiKeyElement as HTMLInputElement).value = getPref('semanticScholarApiKey') || ''
+
+    semanticScholarApiKeyElement.addEventListener('change', () => {
+      setPref('semanticScholarApiKey', ((semanticScholarApiKeyElement as HTMLInputElement).value || '').trim())
+    })
+    semanticScholarApiKeyElement.addEventListener('focusout', () => {
+      setPref('semanticScholarApiKey', ((semanticScholarApiKeyElement as HTMLInputElement).value || '').trim())
+    })
+  }
+
   const autoUpdateRadioGroup = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-autoUpdate`)
   const cutoffDropdown = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-autoUpdateCutoff`)
 

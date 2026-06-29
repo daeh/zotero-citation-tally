@@ -39,6 +39,25 @@
     </html:div>
 
     <label
+      value="API Keys"
+      style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
+    <html:div class="__addonRef__-pref-options-div">
+      <groupbox>
+        <description style="margin: 5px 0">Optional Semantic Scholar API key</description>
+        <hbox
+          align="center"
+          style="margin-bottom: 10px">
+          <html:input
+            type="password"
+            id="zotero-prefpane-__addonRef__-semanticScholarApiKey"
+            style="flex: 1; min-width: 300px; padding: 4px"
+            placeholder="x-api-key" />
+        </hbox>
+        <description style="margin: 0 0 5px 0"> When set, Citation Tally sends this value as the x-api-key header for Semantic Scholar requests. </description>
+      </groupbox>
+    </html:div>
+
+    <label
       value="Autoupdate Tallies"
       style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
     <html:div class="__addonRef__-pref-options-div">
