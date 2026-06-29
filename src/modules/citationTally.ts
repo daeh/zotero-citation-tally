@@ -969,7 +969,20 @@ class DBInterface {
         const url = `https://api.semanticscholar.org/graph/v1/paper/${prefix}${apiId}?fields=citationCount`
         ztoolkit.log('Citation debug - Fetching from Semantic Scholar API:', url)
 
-        const fetchResponse = await fetch(url)
+        const semanticScholarApiKey = (getPref('semanticScholarApiKey') || '').trim()
+        const fetchOptions = semanticScholarApiKey
+          ? {
+              headers: {
+                'x-api-key': semanticScholarApiKey,
+              },
+            }
+          : undefined
+        ztoolkit.log(
+          semanticScholarApiKey
+            ? 'Citation debug - Semantic Scholar API key configured; sending x-api-key header'
+            : 'Citation debug - No Semantic Scholar API key configured; using anonymous Semantic Scholar request',
+        )
+        const fetchResponse = await fetch(url, fetchOptions)
 
         if (fetchResponse.status === 404) {
           ztoolkit.log(
