@@ -1,8 +1,6 @@
 /**
- * Append legacy update entries to the scaffold-generated update JSON so older Zotero versions auto-update to the last compatible release.
- *
- * Patches whichever of update.json / update-beta.json exists in .scaffold/build/.
- * Runs after `zotero-plugin build`.
+ * Add the last compatible Zotero 7 and 8 releases to the scaffold-generated
+ * `update.json` or `update-beta.json`.
  */
 
 import console from 'node:console'

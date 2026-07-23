@@ -1,7 +1,11 @@
+import { getErrorMessage, isErrorNamed } from '../utils/errors'
 import { getString } from '../utils/locale'
 import { getPref } from '../utils/prefs'
+import { retryAgeExceeded } from '../utils/retryAge'
+import { parseCitationStampDate, parseDateAddedInstant, parseLastCheckedInstant } from '../utils/temporalParse'
 
 import { Helpers, updateItem } from './citationTally'
+import { semanticScholarClient } from './semanticScholarClient'
 
 // Ignored items data type
 type IgnoredItemsData = Record<
@@ -15,30 +19,25 @@ type IgnoredItemsData = Record<
   >
 >
 
-// Helper function to check if item should be retried
 function shouldRetryIgnoredItem(count: number, lastChecked: string): boolean {
-  const now = new Date()
-  const lastCheck = new Date(lastChecked)
-  const timeDiff = now.getTime() - lastCheck.getTime()
-  const daysDiff = timeDiff / (1000 * 3600 * 24)
+  return retryAgeExceeded(count, parseLastCheckedInstant(lastChecked), Temporal.Now.instant())
+}
 
-  let requiredDays = 0
-  if (count === 1) {
-    requiredDays = 7 // 1 week
-  } else if (count === 2) {
-    requiredDays = 30 // 1 month
-  } else if (count === 3) {
-    requiredDays = 90 // 3 months
-  } else if (count > 3) {
-    requiredDays = 180 // 6 months
-  } else {
-    return true // Should retry if count is 0 or unexpected
-  }
+// Preference values outside the menu options fall back to six months.
+const ALLOWED_CUTOFF_MONTHS: ReadonlySet<number> = new Set([3, 6, 12, 24])
+function parseCutoffMonths(raw: string): number {
+  const n = Number(raw)
+  return Number.isInteger(n) && ALLOWED_CUTOFF_MONTHS.has(n) ? n : 6
+}
 
-  const shouldRetry = daysDiff > requiredDays
-  // Removed verbose retry debug - info available in summary
-
-  return shouldRetry
+/** Sort newest first; place missing or invalid dates last. */
+function compareByDateAddedDesc(a: Zotero.Item, b: Zotero.Item): number {
+  const ia = parseDateAddedInstant(a.getField('dateAdded'))
+  const ib = parseDateAddedInstant(b.getField('dateAdded'))
+  if (ia === null && ib === null) return 0
+  if (ia === null) return 1
+  if (ib === null) return -1
+  return Temporal.Instant.compare(ib, ia)
 }
 
 // Check if item is ignored for any configured database
@@ -114,8 +113,32 @@ let autoUpdateQueue: Zotero.Item[] = []
 let autoUpdateIndex = 0
 let autoUpdateProgressWindow: any = null
 let autoUpdateRetryCount = 0
+let autoUpdateTimer: ReturnType<typeof setTimeout> | null = null
 const MAX_RETRIES = 3
 const RETRY_DELAY = 5000 // 5 seconds
+
+/** Schedule one queue step and retain its timer so shutdown can cancel it. */
+function scheduleNext(silent: boolean, delay: number): void {
+  if (semanticScholarClient.shutdownSignal.aborted) {
+    finishAutomaticUpdate(undefined, silent)
+    return
+  }
+  autoUpdateTimer = setTimeout(() => {
+    autoUpdateTimer = null
+    void processAutoUpdateQueue(silent)
+  }, delay)
+}
+
+/** Cancel the queued step and settle the current run. */
+function cancelAutomaticUpdate(): void {
+  if (autoUpdateTimer !== null) {
+    clearTimeout(autoUpdateTimer)
+    autoUpdateTimer = null
+  }
+  if (autoUpdateInProgress) {
+    finishAutomaticUpdate(undefined, true)
+  }
+}
 
 /**
  * Check if citation data is outdated based on user preferences
@@ -132,9 +155,10 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
   const databaseOrder = getPref('databaseOrder') || 'crossref'
   const databases = databaseOrder.split(',').map((db: string) => db.trim())
 
-  const cutoffMonths = parseInt(getPref('autoUpdateCutoff') || '6')
-  const cutoffDate = new Date()
-  cutoffDate.setMonth(cutoffDate.getMonth() - cutoffMonths)
+  // A stamp on the cutoff date remains current; Temporal constrains month-end arithmetic.
+  const cutoffDate = Temporal.Now.plainDateISO().subtract({
+    months: parseCutoffMonths(getPref('autoUpdateCutoff') || '6'),
+  })
 
   // Get item identifier to determine which databases are applicable
   const identifier = Helpers.getItemIdentifier(item)
@@ -214,14 +238,19 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
     for (const line of lines) {
       const match = patt_date.exec(line)
       if (match) {
-        const citationDate = new Date(match[1])
-        const daysDiff = Math.floor((new Date().getTime() - citationDate.getTime()) / (1000 * 3600 * 24))
-
-        if (citationDate < cutoffDate) {
-          reasons.push(`${database}_outdated_${match[1]}_${daysDiff}days`)
+        const citationDate = parseCitationStampDate(match[1])
+        if (citationDate === null) {
+          // Retry malformed stored dates instead of leaving the item blocked.
+          reasons.push(`${database}_malformed_${match[1]}`)
           hasAnyCheckableOutdatedData = true
         } else {
-          reasons.push(`${database}_recent_${match[1]}_${daysDiff}days`)
+          const daysDiff = Math.floor(Temporal.Now.plainDateISO().since(citationDate).total({ unit: 'day' }))
+          if (Temporal.PlainDate.compare(citationDate, cutoffDate) < 0) {
+            reasons.push(`${database}_outdated_${match[1]}_${daysDiff}days`)
+            hasAnyCheckableOutdatedData = true
+          } else {
+            reasons.push(`${database}_recent_${match[1]}_${daysDiff}days`)
+          }
         }
         found = true
         break
@@ -317,11 +346,7 @@ async function getItemsNeedingUpdate(): Promise<Zotero.Item[]> {
   ztoolkit.log('*** END DETAILED DEBUG REASONS ***')
 
   // Sort by date added (newest first)
-  itemsNeedingUpdate.sort((a, b) => {
-    const dateA = new Date(a.getField('dateAdded'))
-    const dateB = new Date(b.getField('dateAdded'))
-    return dateB.getTime() - dateA.getTime()
-  })
+  itemsNeedingUpdate.sort(compareByDateAddedDesc)
 
   return itemsNeedingUpdate
 }
@@ -384,7 +409,12 @@ async function startAutomaticUpdate(silent: boolean = false) {
     }
 
     // Start processing with a delay to allow Zotero to fully initialize
-    setTimeout(() => {
+    autoUpdateTimer = setTimeout(() => {
+      autoUpdateTimer = null
+      if (semanticScholarClient.shutdownSignal.aborted) {
+        finishAutomaticUpdate(undefined, silent)
+        return
+      }
       if (!silent) {
         // Show progress window
         autoUpdateProgressWindow = new ztoolkit.ProgressWindow(
@@ -415,6 +445,11 @@ async function startAutomaticUpdate(silent: boolean = false) {
  * Process the automatic update queue with robust error handling
  */
 async function processAutoUpdateQueue(silent: boolean = false) {
+  if (semanticScholarClient.shutdownSignal.aborted) {
+    finishAutomaticUpdate(undefined, silent)
+    return
+  }
+
   const window = Zotero.getMainWindow()
 
   if (!window) {
@@ -463,26 +498,31 @@ async function processAutoUpdateQueue(silent: boolean = false) {
       return
     }
 
-    await updateItem(item, undefined, true, true) // Pass isAutoUpdate=true
+    await updateItem(item, undefined, true)
 
     autoUpdateIndex++
 
-    // No additional delay needed - adaptive rate limiting is handled in the database methods
-    setTimeout(() => void processAutoUpdateQueue(silent), 100)
+    // Database clients apply their own request pacing.
+    scheduleNext(silent, 100)
   } catch (error) {
+    // Cancellation ends the queue without scheduling another item.
+    if (isErrorNamed(error, 'AbortError')) {
+      finishAutomaticUpdate(undefined, silent)
+      return
+    }
     ztoolkit.log('Auto update error:', error)
 
     // Check if it's a rate limit error
-    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorMessage = getErrorMessage(error)
     if (errorMessage.includes('429') || errorMessage.includes('rate limit')) {
       ztoolkit.log('Auto update: Rate limited, retrying...')
-      setTimeout(() => void processAutoUpdateQueue(silent), RETRY_DELAY)
+      scheduleNext(silent, RETRY_DELAY)
       return
     }
 
     // For other errors, try to continue with next item
     autoUpdateIndex++
-    setTimeout(() => void processAutoUpdateQueue(silent), 100)
+    scheduleNext(silent, 100)
   }
 }
 
@@ -507,7 +547,7 @@ function scheduleRetry(silent: boolean = false) {
     })
   }
 
-  setTimeout(() => void processAutoUpdateQueue(silent), RETRY_DELAY)
+  scheduleNext(silent, RETRY_DELAY)
 }
 
 /**
@@ -546,6 +586,10 @@ function finishAutomaticUpdate(errorMessage?: string, silent: boolean = false) {
   }
 
   // Reset state
+  if (autoUpdateTimer !== null) {
+    clearTimeout(autoUpdateTimer)
+    autoUpdateTimer = null
+  }
   autoUpdateQueue = []
   autoUpdateIndex = 0
   autoUpdateRetryCount = 0
@@ -553,4 +597,4 @@ function finishAutomaticUpdate(errorMessage?: string, silent: boolean = false) {
   ztoolkit.log(`Auto update completed: ${updatedCount}/${totalCount} items updated`)
 }
 
-export { startAutomaticUpdate }
+export { cancelAutomaticUpdate, startAutomaticUpdate }

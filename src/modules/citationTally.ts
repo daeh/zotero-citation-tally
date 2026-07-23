@@ -1,11 +1,18 @@
+import { isErrorNamed } from '../utils/errors'
 import { getLocaleID, getString } from '../utils/locale'
 import { getPref, setPref } from '../utils/prefs'
+import { retryAgeExceeded } from '../utils/retryAge'
+import { parseLastCheckedInstant } from '../utils/temporalParse'
 
-// Default rate limits per database (in milliseconds)
+import { getIgnorePolicy } from './ignorePolicy'
+import { semanticScholarClient } from './semanticScholarClient'
+
+import type { ItemIdentifier, LookupResult } from './citationTypes'
+
+// Semantic Scholar uses its own scheduler and has no entry in this millisecond table.
 const DEFAULT_RATE_LIMITS: Record<string, number> = {
   crossref: 1000,
   inspire: 1000,
-  semanticscholar: 3000,
 }
 
 const MAX_RATE_LIMIT_MULTIPLIER = 10
@@ -13,7 +20,7 @@ const MAX_RATE_LIMIT_MULTIPLIER = 10
 // Adaptive rate limiting state
 class RateLimitManager {
   private static multipliers: Record<string, number> = {}
-  private static lastRequestTime: Record<string, number> = {}
+  private static lastRequestTime: Record<string, number | undefined> = {}
 
   static getDelay(database: string): number {
     const baseLimits = getPref('rateLimits')
@@ -57,17 +64,20 @@ class RateLimitManager {
 
   static async waitForRateLimit(database: string): Promise<void> {
     const delay = this.getDelay(database)
-    const lastRequest = this.lastRequestTime[database] || 0
-    const now = Date.now()
-    const timeSinceLastRequest = now - lastRequest
-
-    if (timeSinceLastRequest < delay) {
-      const waitTime = delay - timeSinceLastRequest
-      ztoolkit.log(`Rate limiting ${database}: waiting ${waitTime}ms (${this.multipliers[database] || 1}x multiplier)`)
-      await new Promise((resolve) => setTimeout(resolve, waitTime))
+    // A separate sentinel avoids delaying the first request when the monotonic clock is near zero.
+    const monotonicNow = () => (performance ? performance.now() : Temporal.Now.instant().epochMilliseconds)
+    const lastRequest = this.lastRequestTime[database]
+    if (lastRequest !== undefined) {
+      const timeSinceLastRequest = monotonicNow() - lastRequest
+      if (timeSinceLastRequest < delay) {
+        const waitTime = delay - timeSinceLastRequest
+        ztoolkit.log(
+          `Rate limiting ${database}: waiting ${waitTime}ms (${this.multipliers[database] || 1}x multiplier)`,
+        )
+        await new Promise((resolve) => setTimeout(resolve, waitTime))
+      }
     }
-
-    this.lastRequestTime[database] = Date.now()
+    this.lastRequestTime[database] = monotonicNow()
   }
 }
 
@@ -84,12 +94,6 @@ type IgnoredItemsData = Record<
     }
   >
 >
-
-interface LookupResult {
-  count: number
-  status: 'success' | 'not_found' | 'api_error' | 'no_identifier' | 'rate_limited'
-  message?: string
-}
 
 class IgnoredItemsManager {
   private static memoryCache = new Map<number, { databases: string[] }>() // Session-only cache for no_identifier
@@ -108,21 +112,7 @@ class IgnoredItemsManager {
   }
 
   private static shouldRetryItem(count: number, lastChecked: string): boolean {
-    const now = new Date()
-    const lastCheck = new Date(lastChecked)
-    const timeDiff = now.getTime() - lastCheck.getTime()
-    const daysDiff = timeDiff / (1000 * 3600 * 24)
-
-    if (count === 1) {
-      return daysDiff > 7 // 1 week
-    } else if (count === 2) {
-      return daysDiff > 30 // 1 month
-    } else if (count === 3) {
-      return daysDiff > 90 // 3 months
-    } else if (count > 3) {
-      return daysDiff > 180 // 6 months
-    }
-    return true // Should retry if count is 0 or unexpected
+    return retryAgeExceeded(count, parseLastCheckedInstant(lastChecked), Temporal.Now.instant())
   }
 
   static markAsIgnored(
@@ -155,11 +145,11 @@ class IgnoredItemsManager {
       if (!data[database][itemKey]) {
         data[database][itemKey] = {
           count: 1,
-          lastChecked: new Date().toISOString(),
+          lastChecked: Temporal.Now.instant().toString({ smallestUnit: 'millisecond' }),
         }
       } else {
         data[database][itemKey].count++
-        data[database][itemKey].lastChecked = new Date().toISOString()
+        data[database][itemKey].lastChecked = Temporal.Now.instant().toString({ smallestUnit: 'millisecond' })
       }
 
       this.savePersistentData(data)
@@ -472,8 +462,8 @@ class Helpers {
    * @param item Zotero item
    * @returns Array of objects with type and id, ordered by preference
    */
-  static getAllItemIdentifiers(item: Zotero.Item): { type: string; id: string; source: string }[] {
-    const identifiers: { type: string; id: string; source: string }[] = []
+  static getAllItemIdentifiers(item: Zotero.Item): ItemIdentifier[] {
+    const identifiers: ItemIdentifier[] = []
 
     // Regex for extracting arXiv IDs from text fields (handles "arXiv:0803.3042" or "0803.3042")
     const arXivIdRegex = /(?:arXiv:\s*)?([a-z-]+\/\d+|\d+\.\d+)/i
@@ -540,7 +530,7 @@ class Helpers {
    * @param item Zotero item
    * @returns Object with type and id, or null if neither found
    */
-  static getItemIdentifier(item: Zotero.Item): { type: string; id: string } | null {
+  static getItemIdentifier(item: Zotero.Item): ItemIdentifier | null {
     const identifiers = this.getAllItemIdentifiers(item)
     return identifiers.length > 0 ? identifiers[0] : null
   }
@@ -625,12 +615,8 @@ class Core {
       return !match
     })
 
-    // Format date
-    const today = new Date()
-    const dd = String(today.getDate()).padStart(2, '0')
-    const mm = String(today.getMonth() + 1).padStart(2, '0') // January is 0!
-    const yyyy = today.getFullYear()
-    const date = `${yyyy}-${mm}-${dd}`
+    // Citation stamps are stored as YYYY-MM-DD and parsed by citationAutoupdate.
+    const date = Temporal.Now.plainDateISO().toString()
 
     // Add new counts
     for (const { title, count } of data) {
@@ -930,113 +916,9 @@ class DBInterface {
    * @returns LookupResult with count and status
    */
   static async getSemanticScholarCountEnhanced(item: Zotero.Item): Promise<LookupResult> {
+    // The dedicated client handles authentication, pacing, retries, and identifier fallback.
     const identifiers = Helpers.getAllItemIdentifiers(item)
-    if (identifiers.length === 0) {
-      ztoolkit.log('Citation debug - No DOI or arXiv ID found for item:', item.id)
-      return { count: -1, status: 'no_identifier', message: 'No DOI or arXiv ID found' }
-    }
-
-    // Try each identifier until one succeeds
-    for (const identifier of identifiers) {
-      ztoolkit.log(
-        `Citation debug - Trying Semantic Scholar with ${identifier.type} ID: ${identifier.id} from ${identifier.source}`,
-      )
-
-      // Apply adaptive rate limiting
-      await RateLimitManager.waitForRateLimit('semanticscholar')
-
-      let response: any = null
-
-      try {
-        // For arXiv DOIs, extract the arXiv ID since Semantic Scholar doesn't recognize arXiv DOIs
-        let prefix = ''
-        let apiId = identifier.id
-
-        if (identifier.type === 'doi' && identifier.id.includes('arXiv')) {
-          // Extract arXiv ID from DOI like "10.48550/arXiv.2201.02177"
-          const arxivMatch = /arXiv\.(\d+\.\d+)/i.exec(identifier.id)
-          if (arxivMatch) {
-            prefix = 'arXiv:'
-            apiId = arxivMatch[1]
-            ztoolkit.log(`Citation debug - Using arXiv ID ${apiId} instead of arXiv DOI for Semantic Scholar`)
-          }
-        } else if (identifier.type === 'arxiv') {
-          prefix = 'arXiv:'
-          apiId = identifier.id
-        }
-        // For regular DOIs, use no prefix
-
-        const url = `https://api.semanticscholar.org/graph/v1/paper/${prefix}${apiId}?fields=citationCount`
-        ztoolkit.log('Citation debug - Fetching from Semantic Scholar API:', url)
-
-        const fetchResponse = await fetch(url)
-
-        if (fetchResponse.status === 404) {
-          ztoolkit.log(
-            `Citation debug - ${identifier.type} ID ${identifier.id} not found in Semantic Scholar, trying next identifier`,
-          )
-          continue
-        }
-
-        if (fetchResponse.status === 429) {
-          RateLimitManager.handleRateLimit('semanticscholar')
-          return { count: -1, status: 'rate_limited', message: 'API rate limit exceeded' }
-        }
-
-        response = await fetchResponse.json().catch((error) => {
-          ztoolkit.log('Citation debug - Semantic Scholar API fetch error:', error)
-          return null
-        })
-
-        if (response === null) {
-          ztoolkit.log(
-            `Citation debug - Semantic Scholar API request failed for ${identifier.type} ID ${identifier.id}, trying next identifier`,
-          )
-          continue
-        }
-
-        ztoolkit.log(
-          'Citation debug - Semantic Scholar API response:',
-          JSON.stringify(response).substring(0, 500) + '...',
-        )
-
-        const count = response?.citationCount
-        if (count === undefined) {
-          ztoolkit.log(
-            `Citation debug - No citationCount field in Semantic Scholar response for ${identifier.type} ID ${identifier.id}, trying next identifier`,
-          )
-          continue
-        }
-
-        if (typeof count === 'number') {
-          ztoolkit.log(
-            `Citation debug - Semantic Scholar citation count: ${count} (found using ${identifier.type} ID ${identifier.id} from ${identifier.source})`,
-          )
-          RateLimitManager.handleSuccess('semanticscholar')
-          return { count, status: 'success' }
-        }
-        if (typeof count === 'string') {
-          ztoolkit.log(
-            `Citation debug - Semantic Scholar citation count (string): ${count} (found using ${identifier.type} ID ${identifier.id} from ${identifier.source})`,
-          )
-          RateLimitManager.handleSuccess('semanticscholar')
-          return { count: parseInt(count), status: 'success' }
-        }
-        ztoolkit.log(
-          `Citation debug - Invalid response format for ${identifier.type} ID ${identifier.id}, trying next identifier`,
-        )
-        continue
-      } catch (err) {
-        ztoolkit.log(
-          `Error getting citation count from Semantic Scholar for ${identifier.type} ID ${identifier.id}:`,
-          err,
-        )
-        continue
-      }
-    }
-
-    // All identifiers failed
-    return { count: 0, status: 'not_found', message: 'No valid identifiers found in Semantic Scholar' }
+    return semanticScholarClient.lookupCitationCount(identifiers)
   }
 }
 
@@ -1126,51 +1008,46 @@ function updateItems(items: Zotero.Item[], operations?: string[] | string, silen
     })
   }
 
-  updateNextItem(operations, silent)
+  void runUpdateQueue(operations, silent)
 }
 
-/**
- * Process the next item in the queue
- * @param operation Citation source to use
- */
-function updateNextItem(operations?: string[] | string, silent: boolean = false) {
-  // Move to next item
-  currentIndex++
+/** Process manual updates sequentially until the queue completes or is cancelled. */
+async function runUpdateQueue(operations?: string[] | string, silent: boolean = false): Promise<void> {
+  for (currentIndex = 0; currentIndex < totalItems; currentIndex++) {
+    if (semanticScholarClient.shutdownSignal.aborted) break
 
-  // Check if processing is complete
-  if (currentIndex >= totalItems) {
-    if (progressWindow) {
-      progressWindow.close()
-      progressWindow = null
-    }
-    if (!silent) {
-      const successWindow = new ztoolkit.ProgressWindow(addon.data.config.addonName)
-
-      successWindow.createLine({
-        text: getString('progress-items-updated', { args: { count: updatedCount } }),
-        type: 'success',
-        progress: 100,
+    if (!silent && progressWindow) {
+      const percent = Math.round((currentIndex / totalItems) * 100)
+      progressWindow.changeLine({
+        text: getString('progress-item-counter', { args: { current: currentIndex + 1, total: totalItems } }),
+        progress: percent,
       })
-      successWindow.show()
-      successWindow.startCloseTimer(4000)
+      progressWindow.show()
     }
-    return
+
+    try {
+      // Manual updates bypass the ignored-item cache.
+      await updateItem(itemsToUpdate[currentIndex], operations, false)
+    } catch (e) {
+      if (isErrorNamed(e, 'AbortError')) break
+      ztoolkit.log('Error updating citation count for item', e)
+    }
   }
 
-  // Update progress
-  const percent = Math.round((currentIndex / totalItems) * 100)
-  if (!silent && progressWindow) {
-    progressWindow.changeLine({
-      text: getString('progress-item-counter', { args: { current: currentIndex + 1, total: totalItems } }),
-      progress: percent,
+  if (progressWindow) {
+    progressWindow.close()
+    progressWindow = null
+  }
+  if (!silent && !semanticScholarClient.shutdownSignal.aborted) {
+    const successWindow = new ztoolkit.ProgressWindow(addon.data.config.addonName)
+    successWindow.createLine({
+      text: getString('progress-items-updated', { args: { count: updatedCount } }),
+      type: 'success',
+      progress: 100,
     })
-    progressWindow.show()
+    successWindow.show()
+    successWindow.startCloseTimer(4000)
   }
-
-  // Process current item
-  const item = itemsToUpdate[currentIndex]
-
-  void updateItem(item, operations, silent, false) // Manual updates don't respect unlisted cache
 }
 
 /**
@@ -1182,9 +1059,8 @@ function updateNextItem(operations?: string[] | string, silent: boolean = false)
 async function updateItem(
   item: Zotero.Item,
   operations?: string[] | string,
-  silent: boolean = false,
   isAutoUpdate: boolean = false,
-) {
+): Promise<void> {
   try {
     ztoolkit.log('Citation debug - Updating item:', item.id, 'title:', item.getField('title'))
 
@@ -1196,7 +1072,6 @@ async function updateItem(
 
     const data: CountArray = []
     for (const operation of databases) {
-      // Check if this item is marked as ignored for this database (auto-update only)
       if (isAutoUpdate && IgnoredItemsManager.isIgnored(item.id, operation, true)) {
         ztoolkit.log(`Citation debug - Skipping ${operation} for item ${item.id} (marked as ignored)`)
         continue
@@ -1205,7 +1080,6 @@ async function updateItem(
       let result: LookupResult
       let displayName = ''
       if (operation === 'crossref') {
-        ztoolkit.log('Citation debug - DOI:', item.getField('DOI'))
         result = await DBInterface.getCrossrefCountEnhanced(item)
         displayName = getOperationName(operation)
       } else if (operation === 'inspire') {
@@ -1218,46 +1092,30 @@ async function updateItem(
         continue
       }
 
-      // Handle the result and update tracking
-      if (result.status === 'not_found') {
-        ztoolkit.log(`Citation debug - ${operation} confirmed item ${item.id} as not found`)
-        IgnoredItemsManager.markAsIgnored(item.id, operation, 'not_found', true)
-      } else if (result.status === 'no_identifier') {
-        ztoolkit.log(`Citation debug - ${operation} no identifier for item ${item.id}`)
-        IgnoredItemsManager.markAsIgnored(item.id, operation, 'no_identifier', false)
-      } else if (result.status === 'success' && result.count >= 0) {
-        // Clear any previous ignored status on successful result
-        ztoolkit.log(`Citation debug - ${operation} success for item ${item.id}: count=${result.count}`)
+      if (result.status === 'success' && result.count >= 0) {
         IgnoredItemsManager.clearIgnoredItem(item.id, operation)
         data.push({ title: displayName, count: result.count })
-      } else if (result.status === 'rate_limited') {
-        ztoolkit.log(`Citation debug - ${operation} rate limited for item ${item.id}: ${result.message}`)
-        // Don't mark as ignored for rate limits - purely temporary
-      } else if (result.status === 'api_error') {
-        ztoolkit.log(`Citation debug - ${operation} API error for item ${item.id}: ${result.message}`)
-
-        // Track persistent API errors during autoupdate to prevent repeated attempts
-        if (isAutoUpdate) {
-          IgnoredItemsManager.markAsIgnored(item.id, operation, 'api_error', true)
+      } else {
+        // Persist not-found results and auto-update API errors; cache missing identifiers for this session.
+        const policy = getIgnorePolicy(result.status, isAutoUpdate)
+        if (policy === 'session') {
+          IgnoredItemsManager.markAsIgnored(item.id, operation, 'no_identifier', false)
+        } else if (policy === 'persistent') {
+          const reason = result.status === 'not_found' ? 'not_found' : 'api_error'
+          IgnoredItemsManager.markAsIgnored(item.id, operation, reason, true)
         }
+        ztoolkit.log(`Citation debug - ${operation} for item ${item.id}: ${result.status} (${result.message ?? ''})`)
       }
     }
 
-    ztoolkit.log('Citation debug - Retrieved count:', data)
-
     if (data.length > 0) {
       await Core.setCitationCount(item, data)
-      ztoolkit.log('Citation debug - Item saved with new citation count')
       updatedCount++
-    } else {
-      ztoolkit.log('Citation debug - No valid count retrieved, skipping update')
     }
   } catch (e) {
+    if (isErrorNamed(e, 'AbortError')) throw e
     ztoolkit.log('Error updating citation count for item', e)
   }
-
-  // Process next item
-  void updateNextItem(operations, silent)
 }
 
 class BasicRegistrar {

@@ -1,8 +1,9 @@
 import { config } from '../../package.json'
 import { getPref, setPref } from '../utils/prefs'
 
-// Get localized string in preferences context - using hardcoded strings since
-// preferences window has different localization context that's hard to access
+import { semanticScholarClient, type ValidationStatus } from './semanticScholarClient'
+
+// Preferences use a separate localization context, so these strings are local.
 function getPrefsString(key: string): string {
   const strings: Record<string, string> = {
     'pref-database-valid': 'Valid database configuration',
@@ -10,8 +11,149 @@ function getPrefsString(key: string): string {
     'pref-database-invalid': 'Invalid database(s): %s',
     'pref-database-count': 'Please enter 1-3 databases',
     'pref-database-empty': 'Please enter at least one database',
+    'pref-apikey-valid': '✓ API key is valid',
+    'pref-apikey-invalid': '✗ API key was rejected',
+    'pref-apikey-indeterminate': 'Could not validate right now — try again',
+    'pref-apikey-empty': 'No key set (using shared, unauthenticated access)',
+    'pref-apikey-error': 'Semantic Scholar returned an unexpected error',
+    'pref-apikey-checking': 'Checking…',
   }
   return strings[key] || key
+}
+
+const apiKeyInputId = `zotero-prefpane-${config.addonRef}-semanticScholarApiKey`
+const apiKeyStatusId = `${apiKeyInputId}-status`
+const apiKeyShowId = `${apiKeyInputId}-show`
+const apiKeyValidateId = `${apiKeyInputId}-validate`
+const apiKeyGroupId = `${apiKeyInputId}-group`
+
+// Draft state is shared by the single preferences pane.
+let apiKeyDirty = false
+let apiKeyDraftRevision = 0
+let apiKeyProbeController: AbortController | null = null
+let apiKeyOpSeq = 0
+
+function getApiKeyInput(window: Window): HTMLInputElement | null {
+  return window.document?.querySelector<HTMLInputElement>(`#${apiKeyInputId}`) ?? null
+}
+
+function statusPresentation(status: ValidationStatus | 'checking' | 'neutral'): { text: string; color: string } {
+  switch (status) {
+    case 'valid':
+      return { text: getPrefsString('pref-apikey-valid'), color: '#008000' }
+    case 'invalid':
+      return { text: getPrefsString('pref-apikey-invalid'), color: '#d70022' }
+    case 'client_error':
+      return { text: getPrefsString('pref-apikey-error'), color: '#b8860b' }
+    case 'indeterminate':
+      return { text: getPrefsString('pref-apikey-indeterminate'), color: '#b8860b' }
+    case 'empty':
+      return { text: getPrefsString('pref-apikey-empty'), color: '' }
+    case 'checking':
+      return { text: getPrefsString('pref-apikey-checking'), color: '' }
+    default:
+      return { text: '', color: '' } // neutral / aborted
+  }
+}
+
+function renderApiKeyStatus(window: Window, status: ValidationStatus | 'checking' | 'neutral'): void {
+  const el = window.document?.querySelector<HTMLElement>(`#${apiKeyStatusId}`)
+  if (!el) return
+  const { text, color } = statusPresentation(status)
+  el.textContent = text
+  el.style.color = color
+}
+
+function setValidateEnabled(window: Window, enabled: boolean): void {
+  const btn = window.document?.querySelector<XULButtonElement>(`#${apiKeyValidateId}`)
+  if (btn) btn.disabled = !enabled
+}
+
+/** Store and validate the field unless its value changes while the request is pending. */
+async function commitAndRender(window: Window): Promise<void> {
+  const input = getApiKeyInput(window)
+  if (!input) return
+  const revisionAtStart = apiKeyDraftRevision
+  const op = ++apiKeyOpSeq
+  // Repeated validation of the same value shares a live request; editing the field aborts it.
+  const controller = apiKeyProbeController?.signal.aborted === false ? apiKeyProbeController : new AbortController()
+  apiKeyProbeController = controller
+
+  renderApiKeyStatus(window, 'checking')
+  setValidateEnabled(window, false)
+  const result = await semanticScholarClient.commitAndValidate(input.value, controller.signal).finally(() => {
+    // Controllers can outlive their requests, so only the newest operation may re-enable the button.
+    if (op === apiKeyOpSeq) setValidateEnabled(window, true)
+  })
+
+  // Ignore results superseded by a newer request or edit.
+  if (op !== apiKeyOpSeq) return
+  if (apiKeyDraftRevision !== revisionAtStart) return
+  if (input.value.trim() !== result.normalizedKey) return
+  if (result.status === 'aborted') return
+  apiKeyDirty = false
+  renderApiKeyStatus(window, result.status)
+}
+
+export function validateApiKeyUI(window: Window): Promise<void> {
+  return commitAndRender(window)
+}
+
+export function toggleApiKeyVisibility(window: Window): void {
+  const input = getApiKeyInput(window)
+  const btn = window.document?.querySelector<XULButtonElement>(`#${apiKeyShowId}`)
+  if (!input || !btn) return
+  const revealed = input.type === 'text'
+  input.type = revealed ? 'password' : 'text'
+  btn.setAttribute('aria-pressed', String(!revealed))
+  btn.setAttribute('label', revealed ? 'Show' : 'Hide')
+}
+
+function bindApiKeyField(window: Window): void {
+  const input = getApiKeyInput(window)
+  if (!input) return
+
+  // Load the stored key before blur handling can persist the field.
+  input.value = (getPref('semanticScholarApiKey') || '').trim()
+  apiKeyDirty = false
+  apiKeyDraftRevision++
+  renderApiKeyStatus(window, input.value === '' ? 'empty' : 'neutral')
+  setValidateEnabled(window, true)
+
+  input.addEventListener('input', () => {
+    apiKeyDirty = true
+    apiKeyDraftRevision++
+    apiKeyProbeController?.abort()
+    renderApiKeyStatus(window, 'neutral')
+  })
+
+  // Validate after focus leaves the whole group, not while it moves between these controls.
+  const group = window.document?.querySelector(`#${apiKeyGroupId}`)
+  group?.addEventListener('focusout', (event: Event) => {
+    const related = (event as FocusEvent).relatedTarget as Node | null
+    // No related target means focus left the document.
+    if (related && group.contains(related)) return
+    if (apiKeyDirty) void commitAndRender(window)
+  })
+
+  input.addEventListener('keydown', (event: Event) => {
+    if ((event as KeyboardEvent).key === 'Enter') {
+      event.preventDefault()
+      void commitAndRender(window)
+    }
+  })
+
+  // Save pending edits during teardown without starting a request.
+  window.addEventListener(
+    'unload',
+    () => {
+      if (apiKeyDirty) {
+        const el = getApiKeyInput(window)
+        if (el) setPref('semanticScholarApiKey', el.value.trim())
+      }
+    },
+    { once: true },
+  )
 }
 
 // export registerStyleSheet(_window: Window) {
@@ -27,7 +169,7 @@ function getPrefsString(key: string): string {
 //   // doc.getElementById('zotero-item-pane-content')?.classList.add('makeItRed')
 // }
 
-export async function registerPrefsScripts(_window: Window) {
+export function registerPrefsScripts(_window: Window) {
   // See addon/content/preferences.xhtml onpaneload
   if (!addon.data.prefs) {
     addon.data.prefs = {
@@ -93,6 +235,8 @@ function bindPrefEvents() {
       manager.refreshColumns?.()
     })
   }
+
+  bindApiKeyField(window)
 }
 
 interface Validation {

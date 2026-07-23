@@ -1,0 +1,18 @@
+{
+  "//": "Node-only test project. Includes tests and Zotero-independent modules; excludes Zotero globals and bundler-only imports from the main TypeScript project.",
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["esnext"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  },
+  "include": ["test/**/*.ts", "src/modules/citationTypes.ts", "src/modules/ignorePolicy.ts", "src/modules/semanticScholarKeyState.ts", "src/modules/semanticScholarClient.core.ts", "src/utils/errors.ts", "src/utils/retryAge.ts", "src/utils/temporalParse.ts", "src/utils/s2Identifiers.ts"]
+}

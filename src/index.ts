@@ -6,13 +6,13 @@ import Addon from './addon'
 
 const basicTool = new BasicTool()
 
-// @ts-ignore - Plugin instance is not typed
+// @ts-expect-error addon instance is injected at runtime
 if (!basicTool.getGlobal('Zotero')[config.addonInstance]) {
   _globalThis.addon = new Addon()
   defineGlobal('ztoolkit', () => {
     return _globalThis.addon.data.ztoolkit
   })
-  // @ts-ignore - Plugin instance is not typed
+  // @ts-expect-error addon instance is injected at runtime
   Zotero[config.addonInstance] = addon
 }
 

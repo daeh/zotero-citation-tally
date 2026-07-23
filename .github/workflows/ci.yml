@@ -8,31 +8,48 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: corepack enable
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
-          cache: yarn
+          node-version-file: .node-version
+      # Node 25+ no longer bundles Corepack; install it before it manages Yarn.
+      - run: npm install -g corepack@latest && corepack enable
       - run: yarn install --immutable
       - run: yarn lint:check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - run: npm install -g corepack@latest && corepack enable
+      - run: yarn install --immutable
+      - run: yarn tsc -p tsconfig.test.json --noEmit
+      - run: yarn test:unit
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: corepack enable
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
-          cache: yarn
+          node-version-file: .node-version
+      - run: npm install -g corepack@latest && corepack enable
       - run: yarn install --immutable
       - run: yarn build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: build-result
           path: .scaffold/build
+          # .scaffold is a dot-directory, excluded by upload-artifact by default.
+          include-hidden-files: true
+          if-no-files-found: error

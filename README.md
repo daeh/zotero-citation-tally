@@ -76,8 +76,19 @@ Once installed, the plugin will automatically begin tracking citation counts for
   - For general academic papers: `crossref, semanticscholar`
 
 - **Automatic Updates**: Enable automatic citation updates on startup for outdated items
-- **Adaptive Rate Limiting**: Smart rate limiting that starts with base delays and automatically increases up to 10x when rate limits are detected, then gradually decreases on success
+- **Adaptive Rate Limiting**: Crossref and INSPIRE increase their delays when throttled and ease off after successful requests. Semantic Scholar uses a separate scheduler and backoff policy; see [Rate Limiting](#rate-limiting).
 - **Database-Specific Rate Limits**: Configure individual base rate limits for each database (Crossref, INSPIRE, Semantic Scholar)
+
+</details>
+
+<details>
+
+<summary>API Keys</summary>
+
+- **Semantic Scholar API key** (optional): Enter a key under `Settings → Citation Tally → API keys`. Without one, requests use Semantic Scholar's shared, unauthenticated access.
+  - Request a key at [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api).
+  - **Validate** checks the key. **Show** reveals the field value.
+  - Zotero stores the key in its local preferences without encryption. Citation Tally sends it only to Semantic Scholar in the `x-api-key` header. If the service rejects it, the plugin switches to unauthenticated access and displays a warning.
 
 </details>
 
@@ -88,7 +99,7 @@ Once installed, the plugin will automatically begin tracking citation counts for
 <summary>Common Issues</summary>
 
 - **No citation data found**: The plugin requires items to have DOIs, arXiv IDs, or other identifiers that databases can match. Journal articles, conference papers, and books with DOIs work best. Items like web pages, theses, or older publications without digital identifiers may not have citation data available in academic databases.
-- **Rate limiting**: The plugin aims to be respectful of the databases that make citation information available by adaptively throttling request frequency and avoiding unnecessary requests. It starts with base delays (1-3 seconds) and automatically increases delays up to 10x when rate limits are detected, then gradually decreases on successful requests. Large batch updates may take time but will complete automatically. The plugin keeps track of items that do not appear in databases and avoids requesting them frequently, but will periodically check to see these items have been added.
+- **Rate limiting**: Each database paces its own requests. Crossref and INSPIRE increase delays up to 10× when throttled and ease off after successful requests. Semantic Scholar retries transient failures with exponential backoff and honors the server's `Retry-After` header. Large updates may take time. Items not found in a database are retried at increasing intervals.
 - **Network issues**: Ensure Zotero has internet access and your firewall isn't blocking requests to academic databases.
 
 </details>
@@ -107,21 +118,22 @@ The plugin tracks items that fail to return citation data and intelligently sche
   - 4+ attempts: Wait 180 days
 - **Manual Override**: Right-click updates bypass all retry restrictions
 
-### Adaptive Rate Limiting
+### Rate Limiting
 
-The plugin respects API limits with intelligent throttling:
+**Crossref and INSPIRE** use adaptive throttling:
 
 **Base Delays:**
 
 - Crossref: 1 second
 - INSPIRE: 1 second
-- Semantic Scholar: 3 seconds
 
 **Adaptive Behavior:**
 
-- Increases delay by 1.5× on rate limit errors (up to 10× maximum)
+- Increases delay by 1.5× on rate-limit errors (up to 10× maximum)
 - Decreases by 0.9× on successful requests
 - Maintains separate multipliers for each database
+
+**Semantic Scholar** uses one request scheduler. It leaves at least 1 second between requests made with an API key and at least 3 seconds between unauthenticated requests. Transient failures use full-jitter exponential backoff, with `Retry-After` as the minimum delay.
 
 ### Performance Optimizations
 

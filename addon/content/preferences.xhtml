@@ -111,6 +111,54 @@
         </radiogroup>
       </groupbox>
     </html:div>
+
+    <label
+      value="API keys"
+      style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
+    <html:div class="__addonRef__-pref-options-div">
+      <groupbox>
+        <description style="margin: 5px 0">Optional. Get a free key at semanticscholar.org/product/api. Leave blank to use shared, unauthenticated access.</description>
+        <html:div style="margin-bottom: 5px; font-size: 90%; opacity: 0.75"
+          >Stored locally in Zotero preferences, unencrypted; masking only guards against shoulder-surfing. While enabled, the key is sent to Semantic Scholar as the x-api-key header for citation
+          lookups and validation; an edited key is validated automatically on Enter, when you activate Validate, and when focus leaves the key controls — closing the pane saves a still-dirty key
+          without validating.</html:div
+        >
+        <hbox
+          id="zotero-prefpane-__addonRef__-semanticScholarApiKey-group"
+          align="center"
+          style="margin-bottom: 10px">
+          <html:label
+            for="zotero-prefpane-__addonRef__-semanticScholarApiKey"
+            style="margin-right: 8px"
+            >Semantic Scholar</html:label
+          >
+          <html:input
+            type="password"
+            id="zotero-prefpane-__addonRef__-semanticScholarApiKey"
+            autocomplete="off"
+            spellcheck="false"
+            style="flex: 1; min-width: 240px; padding: 4px"
+            placeholder="Semantic Scholar API key" />
+          <button
+            id="zotero-prefpane-__addonRef__-semanticScholarApiKey-show"
+            label="Show"
+            aria-pressed="false"
+            aria-controls="zotero-prefpane-__addonRef__-semanticScholarApiKey"
+            style="margin-left: 8px"
+            oncommand="Zotero.__addonInstance__.hooks.onPrefsEvent('toggleApiKeyVisibility', { window })" />
+          <button
+            id="zotero-prefpane-__addonRef__-semanticScholarApiKey-validate"
+            label="Validate"
+            style="margin-left: 8px"
+            oncommand="Zotero.__addonInstance__.hooks.onPrefsEvent('validateApiKey', { window })" />
+        </hbox>
+        <html:div
+          id="zotero-prefpane-__addonRef__-semanticScholarApiKey-status"
+          aria-live="polite"
+          style="margin-bottom: 5px; min-height: 20px; margin-top: 0px">
+        </html:div>
+      </groupbox>
+    </html:div>
   </groupbox>
 </vbox>
 

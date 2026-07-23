@@ -1,6 +1,8 @@
 import stylisticPlugin from '@stylistic/eslint-plugin'
 import zotero from '@zotero-plugin/eslint-config'
-import importPlugin from 'eslint-plugin-import'
+import { defineConfig } from 'eslint/config'
+import { createTypeScriptImportResolver } from 'eslint-import-resolver-typescript'
+import { importX } from 'eslint-plugin-import-x'
 
 const context = (() => {
   if (typeof process.env.NODE_ENV === 'undefined') return 'default'
@@ -31,7 +33,7 @@ const srcRelaxations = {
 
 const projectFilesToIgnore = context === 'repository' ? [] : ['zotero-plugin.config.ts', '*.config.mjs']
 
-export default zotero({
+const baseConfig = zotero({
   overrides: [
     {
       name: 'zotero-citation-tally/stylistic',
@@ -56,27 +58,20 @@ export default zotero({
       name: 'zotero-citation-tally/import-order',
       files: ['src/**/*.{ts,tsx}'],
       plugins: {
-        import: importPlugin,
+        'import-x': importX,
       },
       settings: {
-        'import/resolver': {
-          typescript: {
+        'import-x/resolver-next': [
+          createTypeScriptImportResolver({
             project: './tsconfig.json',
             alwaysTryTypes: true,
-          },
-          node: {
-            extensions: ['.ts', '.tsx'],
-            moduleDirectory: ['node_modules', 'src/'],
-          },
-        },
-        'import/parsers': {
-          '@typescript-eslint/parser': ['.ts', '.tsx'],
-        },
+          }),
+        ],
       },
       rules: {
-        'import/no-unresolved': 'error',
-        'import/namespace': 'off',
-        'import/order': [
+        'import-x/no-unresolved': 'error',
+        'import-x/namespace': 'off',
+        'import-x/order': [
           'error',
           {
             'groups': ['builtin', 'external', 'internal', 'parent', 'sibling', 'index', 'type', 'object', 'unknown'],
@@ -116,4 +111,26 @@ export default zotero({
       ignores: ['**/*-lintignore*', '**/*_lintignore*', 'scripts/', 'src/modules/examples.ts', ...projectFilesToIgnore],
     },
   ],
+})
+
+// Use the plugin registered by the preset to avoid loading a second @typescript-eslint instance.
+const tsPlugin = baseConfig.find((c) => c.plugins?.['@typescript-eslint'])?.plugins?.['@typescript-eslint']
+if (!tsPlugin) throw new Error('@zotero-plugin/eslint-config did not register @typescript-eslint')
+const typeChecked = tsPlugin.configs['flat/recommended-type-checked-only']
+if (!Array.isArray(typeChecked)) throw new Error('unexpected shape for recommended-type-checked-only')
+
+// Keep no-unsafe findings visible without making existing any usage fail linting.
+const noUnsafeWarn = Object.fromEntries(
+  Object.keys(Object.assign({}, ...typeChecked.filter((c) => c.rules).map((c) => c.rules)))
+    .filter((r) => r.startsWith('@typescript-eslint/no-unsafe-'))
+    .map((r) => [r, 'warn']),
+)
+
+export default defineConfig(baseConfig, {
+  name: 'zotero-citation-tally/type-checked',
+  files: ['src/**/*.{ts,mts,cts,tsx}'],
+  ignores: ['src/modules/examples.ts'],
+  extends: [typeChecked],
+  languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } },
+  rules: { ...noUnsafeWarn },
 })

@@ -1,4 +1,4 @@
-import { startAutomaticUpdate } from './modules/citationAutoupdate'
+import { cancelAutomaticUpdate, startAutomaticUpdate } from './modules/citationAutoupdate'
 import { BasicRegistrar, scheduleMonthlyCleanup, UIRegistrar, UX } from './modules/citationTally'
 /* PUBIGNORE 
 import {
@@ -9,7 +9,13 @@ import {
   UIExampleFactory,
 } from './modules/examples'
 */
-import { registerPrefsScripts, validateDatabaseOrder } from './modules/preferenceScript'
+import {
+  registerPrefsScripts,
+  toggleApiKeyVisibility,
+  validateApiKeyUI,
+  validateDatabaseOrder,
+} from './modules/preferenceScript'
+import { semanticScholarClient } from './modules/semanticScholarClient'
 import { getString, initLocale } from './utils/locale'
 // import { getPref } from './utils/prefs'
 import { createZToolkit } from './utils/ztoolkit'
@@ -20,6 +26,9 @@ async function onStartup() {
   initLocale()
 
   BasicRegistrar.registerPrefs()
+
+  // Key changes must be observed before any lookup can start.
+  semanticScholarClient.registerObserver()
 
   // Register citation count notifier to detect new items
   UIRegistrar.registerNotifier()
@@ -109,21 +118,27 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   })
   popupWin.startCloseTimer(1000)
 
+  // Display a key-rejection warning that was deferred until a window existed.
+  semanticScholarClient.flushPendingWarning()
+
   // addon.hooks.onDialogEvents('dialogExample')
 }
 
-async function onMainWindowUnload(win: Window): Promise<void> {
+function onMainWindowUnload(win: Window): void {
   ztoolkit.unregisterAll()
+  semanticScholarClient.closeWarning()
   addon.data.dialog?.window?.close()
 }
 
 function onShutdown(): void {
   ztoolkit.unregisterAll()
   UIRegistrar.unregisterThemeObservers()
+  cancelAutomaticUpdate()
+  semanticScholarClient.shutdown()
   addon.data.dialog?.window?.close()
   // Remove addon object
   addon.data.alive = false
-  // @ts-ignore - Plugin instance is not typed
+  // @ts-expect-error addon instance is injected at runtime
   delete Zotero[addon.data.config.addonInstance]
 }
 
@@ -149,13 +164,19 @@ async function onNotify(event: string, type: string, ids: (string | number)[], e
  * @param type event type
  * @param data event data
  */
-async function onPrefsEvent(type: string, data: Record<string, any>) {
+function onPrefsEvent(type: string, data: Record<string, any>) {
   switch (type) {
     case 'load':
       void registerPrefsScripts(data.window)
       break
     case 'validateDatabases':
       validateDatabaseOrder(data.window)
+      break
+    case 'validateApiKey':
+      void validateApiKeyUI(data.window)
+      break
+    case 'toggleApiKeyVisibility':
+      toggleApiKeyVisibility(data.window)
       break
     default:
       return

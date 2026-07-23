@@ -6,6 +6,60 @@
 
 var chromeHandle
 
+// Bootstrap scopes omit these Web APIs; copy them from Zotero's hidden window before loading the bundle.
+var runtimeBridgeRequirements = [
+  ['AbortController', 'function'],
+  ['AbortSignal', 'function'],
+  ['AbortSignal.any', 'function'],
+  ['AbortSignal.timeout', 'function'],
+  ['DOMException', 'function'],
+  ['performance.now', 'function'],
+  ['queueMicrotask', 'function'],
+]
+
+function getRuntimeCapabilityType(provider, path) {
+  if (provider === null || provider === undefined) {
+    return 'provider-unavailable'
+  }
+
+  try {
+    var value = provider
+    for (const property of path.split('.')) {
+      if (value === null || value === undefined) {
+        return 'undefined'
+      }
+      value = value[property]
+    }
+    return typeof value
+  } catch {
+    return 'throws'
+  }
+}
+
+function getHiddenDOMWindow() {
+  try {
+    return Services.appShell.hiddenDOMWindow
+  } catch {
+    return null
+  }
+}
+
+function installRuntimeBridge(context, hiddenDOMWindow) {
+  for (const [path, expectedType] of runtimeBridgeRequirements) {
+    var actualType = getRuntimeCapabilityType(hiddenDOMWindow, path)
+    if (actualType !== expectedType) {
+      var detail = `hidden DOM window capability ${path} has type ${actualType}`
+      throw new Error(`Citation Tally cannot start: ${detail}; expected ${expectedType}`)
+    }
+  }
+
+  context.AbortController = hiddenDOMWindow.AbortController
+  context.AbortSignal = hiddenDOMWindow.AbortSignal
+  context.DOMException = hiddenDOMWindow.DOMException
+  context.performance = hiddenDOMWindow.performance
+  context.queueMicrotask = hiddenDOMWindow.queueMicrotask.bind(hiddenDOMWindow)
+}
+
 function install(data, reason) {}
 
 async function startup({ id, version, resourceURI, rootURI }, reason) {
@@ -17,6 +71,8 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   var manifestURI = Services.io.newURI(rootURI + 'manifest.json')
   chromeHandle = aomStartup.registerChrome(manifestURI, [['content', '__addonRef__', rootURI + 'content/']])
 
+  var hiddenDOMWindow = getHiddenDOMWindow()
+
   /**
    * Global variables for plugin code.
    * The `_globalThis` is the global root variable of the plugin sandbox environment
@@ -26,6 +82,7 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   const ctx = {
     rootURI,
   }
+  installRuntimeBridge(ctx, hiddenDOMWindow)
   ctx._globalThis = ctx
 
   Services.scriptloader.loadSubScript(`${rootURI}/content/scripts/__addonRef__.js`, ctx)

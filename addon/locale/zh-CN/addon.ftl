@@ -32,6 +32,9 @@ database-crossref = Crossref
 database-inspire = INSPIRE
 database-semanticscholar = SemanticScholar
 
+# Semantic Scholar API key
+semantic-scholar-key-rejected = Semantic Scholar API 密钥被拒绝（HTTP 401/403）。将继续在不使用该密钥的情况下运行。请在 Citation Tally 设置中更新或清除该密钥，或重启 Zotero 后重试。
+
 # Column and tooltip
 column-citations = 引用
 tooltip-citation-tallies = { $displayName }：{ $count }
