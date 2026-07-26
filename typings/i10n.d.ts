@@ -57,7 +57,8 @@ export type FluentMessageId =
   | 'progress-items-updated'
   | 'progress-no-valid-items'
   | 'semantic-scholar-key-rejected'
+  | 'semantic-scholar-unavailable'
   | 'startup-begin'
   | 'startup-finish'
   | 'startup-progress'
-  | 'tooltip-citation-tallies';
+  | 'tooltip-citation-tallies'

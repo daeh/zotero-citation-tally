@@ -1,6 +1,6 @@
 {
   "name": "zotero-citation-tally",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "description": "Plugin that tallies citation counts for Zotero items",
   "author": "Dae Houlihan <dev@daeh.info> (https://daeh.info)",
   "license": "AGPL-3.0",
@@ -26,7 +26,8 @@
   "scripts": {
     "start": "zotero-plugin serve",
     "build": "zotero-plugin build && tsc --noEmit && node utils/patch-update-json.mjs",
-    "release": "zotero-plugin release",
+    "scaffold:release": "zotero-plugin release",
+    "release:build": "yarn build && yarn lint && yarn build && yarn lint",
     "lint": "NODE_ENV=production && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
     "lint:check": "NODE_ENV=production && prettier --config prettier.config.mjs --check . && eslint --config eslint.config.mjs .",
     "lint:dev": "NODE_ENV=development && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
@@ -43,14 +44,14 @@
     "@stylistic/eslint-plugin": "^5.10.0",
     "@types/node": "^26.1.1",
     "@zotero-plugin/eslint-config": "^0.6.10",
-    "eslint": "^10.7.0",
+    "eslint": "^10.8.0",
     "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-import-x": "^4.17.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
     "zotero-plugin-scaffold": "^0.8.7",
-    "zotero-types": "4.1.2"
+    "zotero-types": "4.1.3"
   },
   "resolutions": {
     "pdfjs-dist": "npm:^4.10.0",

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "release-candidate/**"
   pull_request:
     branches:
       - main
@@ -35,6 +36,55 @@ jobs:
       - run: yarn install --immutable
       - run: yarn tsc -p tsconfig.test.json --noEmit
       - run: yarn test:unit
+
+  # Real-Zotero startup gate on the platform condition that bricked v0.0.14:
+  # Linux has no hidden DOM window, so the plugin must reach full-capability
+  # startup (initialized flag + bridge report + bundle-realm fetch self-test)
+  # in an actual Zotero. The scaffold runs headless (Xvfb) in CI.
+  zotero-runtime-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - run: npm install -g corepack@latest && corepack enable
+      - run: yarn install --immutable
+      - name: Install current release-channel Zotero
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/zotero-client"
+          extract_dir="$RUNNER_TEMP/zotero-release"
+          mkdir -p "$extract_dir"
+
+          # Resolved at job time: the gate must exercise the Zotero users
+          # actually run, not a version frozen when this file was written.
+          url=$(curl -fL --retry 3 --remove-on-error \
+            -o "$archive" -w "%{url_effective}" \
+            "https://www.zotero.org/download/client/dl?channel=release&platform=linux-x86_64")
+
+          echo "Zotero: $url" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Diagnostic only: records which build was tested; does not
+          # authenticate a mutable download.
+          sha256sum "$archive"
+          # No -j/-J: tar detects compression from the signature, so an upstream
+          # format change (.tar.bz2 -> .tar.xz) cannot break extraction again.
+          tar -xf "$archive" -C "$extract_dir"
+
+          bin=$(find "$extract_dir" -type f -name zotero -perm -u+x -print -quit)
+          [ -n "$bin" ] || { echo "::error::No Zotero binary in $url"; exit 1; }
+          echo "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$bin" >> "$GITHUB_ENV"
+      - name: Run Zotero runtime smoke
+        run: yarn test
+      - name: Preserve Zotero test profile and logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zotero-runtime-logs
+          path: .scaffold/test
+          include-hidden-files: true
+          if-no-files-found: ignore
 
   build:
     runs-on: ubuntu-latest

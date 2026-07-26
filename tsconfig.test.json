@@ -14,5 +14,6 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["test/**/*.ts", "src/modules/citationTypes.ts", "src/modules/ignorePolicy.ts", "src/modules/semanticScholarKeyState.ts", "src/modules/semanticScholarClient.core.ts", "src/utils/errors.ts", "src/utils/retryAge.ts", "src/utils/temporalParse.ts", "src/utils/s2Identifiers.ts"]
+  "include": ["test/**/*.ts", "src/modules/citationTypes.ts", "src/modules/ignorePolicy.ts", "src/modules/semanticScholarKeyState.ts", "src/modules/semanticScholarClient.core.ts", "src/utils/errors.ts", "src/utils/retryAge.ts", "src/utils/temporalParse.ts", "src/utils/s2Identifiers.ts"],
+  "exclude": ["test/zotero"]
 }

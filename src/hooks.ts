@@ -1,5 +1,12 @@
 import { cancelAutomaticUpdate, startAutomaticUpdate } from './modules/citationAutoupdate'
-import { BasicRegistrar, scheduleMonthlyCleanup, UIRegistrar, UX } from './modules/citationTally'
+import {
+  BasicRegistrar,
+  cancelManualUpdate,
+  cancelMonthlyCleanup,
+  scheduleMonthlyCleanup,
+  UIRegistrar,
+  UX,
+} from './modules/citationTally'
 /* PUBIGNORE 
 import {
   BasicExampleFactory,
@@ -10,25 +17,43 @@ import {
 } from './modules/examples'
 */
 import {
+  closeDegradedNotice,
+  maybeShowProactiveDegradedNotice,
+  notifySemanticScholarUnavailable,
+} from './modules/degradedNotice'
+import {
   registerPrefsScripts,
   toggleApiKeyVisibility,
   validateApiKeyUI,
   validateDatabaseOrder,
 } from './modules/preferenceScript'
-import { semanticScholarClient } from './modules/semanticScholarClient'
+import {
+  closeSemanticScholarWarning,
+  flushPendingSemanticScholarWarning,
+  getSemanticScholarClient,
+  isSemanticScholarAvailable,
+  shutdownSemanticScholarClient,
+} from './modules/semanticScholarClient'
 import { getString, initLocale } from './utils/locale'
 // import { getPref } from './utils/prefs'
 import { createZToolkit } from './utils/ztoolkit'
 
 async function onStartup() {
   await Promise.all([Zotero.initializationPromise, Zotero.unlockPromise, Zotero.uiReadyPromise])
+  // A disable during the waits above must not initialize anything.
+  if (!addon.data.alive) return
 
   initLocale()
 
+  addon.data.runtimeBridge = _globalThis.__runtimeBridgeReport
+
   BasicRegistrar.registerPrefs()
 
-  // Key changes must be observed before any lookup can start.
-  semanticScholarClient.registerObserver()
+  // Key changes must be observed before any lookup can start. In the degraded
+  // runtime the client is never constructed; startup must still complete.
+  if (isSemanticScholarAvailable()) {
+    getSemanticScholarClient().registerObserver()
+  }
 
   // Register citation count notifier to detect new items
   UIRegistrar.registerNotifier()
@@ -49,6 +74,9 @@ async function onStartup() {
   // UIExampleFactory.registerReaderItemPaneSection()
 
   await Promise.all(Zotero.getMainWindows().map((win) => onMainWindowLoad(win)))
+
+  // A disable during window setup must not start background work.
+  if (!addon.data.alive) return
 
   // Start automatic citation updates if enabled
   void startAutomaticUpdate()
@@ -82,6 +110,11 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     .show()
 
   await new Promise((resolve) => setTimeout(resolve, 1000))
+  if (!addon.data.alive) {
+    // Late wake after shutdown: close the popup this hook created, register nothing.
+    popupWin.close()
+    return
+  }
   popupWin.changeLine({
     progress: 30,
     text: getString('startup-progress', { args: { percent: 30, message: getString('startup-begin') } }),
@@ -119,25 +152,50 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   popupWin.startCloseTimer(1000)
 
   // Display a key-rejection warning that was deferred until a window existed.
-  semanticScholarClient.flushPendingWarning()
+  flushPendingSemanticScholarWarning()
+
+  // Tell users whose configuration includes Semantic Scholar when the runtime
+  // cannot support it (no-op in the normal full-capability runtime).
+  maybeShowProactiveDegradedNotice()
 
   // addon.hooks.onDialogEvents('dialogExample')
 }
 
 function onMainWindowUnload(win: Window): void {
   ztoolkit.unregisterAll()
-  semanticScholarClient.closeWarning()
+  closeSemanticScholarWarning()
+  closeDegradedNotice()
   addon.data.dialog?.window?.close()
 }
 
+/** Run every teardown step even when one throws; log failures and continue. */
+function runTeardownSteps(steps: readonly (() => void)[]): void {
+  for (const step of steps) {
+    try {
+      step()
+    } catch (e) {
+      ztoolkit.log('Citation Tally teardown step failed', e)
+    }
+  }
+}
+
 function onShutdown(): void {
-  ztoolkit.unregisterAll()
-  UIRegistrar.unregisterThemeObservers()
-  cancelAutomaticUpdate()
-  semanticScholarClient.shutdown()
-  addon.data.dialog?.window?.close()
-  // Remove addon object
+  // Set before teardown so reentrant callbacks already see the plugin as dead.
   addon.data.alive = false
+  // Cancel work before unregistering UI. If a step throws and the delete below
+  // is skipped, the stale Zotero[addonInstance] makes the index.ts guard keep
+  // the old instance on re-enable — so every step runs, come what may.
+  runTeardownSteps([
+    () => cancelAutomaticUpdate(),
+    () => cancelMonthlyCleanup(),
+    () => cancelManualUpdate(),
+    () => shutdownSemanticScholarClient(),
+    () => closeDegradedNotice(),
+    () => ztoolkit.unregisterAll(),
+    () => UIRegistrar.unregisterThemeObservers(),
+    () => addon.data.dialog?.window?.close(),
+  ])
+  // Remove addon object
   // @ts-expect-error addon instance is injected at runtime
   delete Zotero[addon.data.config.addonInstance]
 }
@@ -222,6 +280,8 @@ function onDialogEvents(type: string) {
       UX.updateSelectedItemsCitationCounts()
       break
     case 'retallyOutdatedCitations':
+      // Surface the runtime-degraded state at action time (no-op in full mode).
+      notifySemanticScholarUnavailable()
       void startAutomaticUpdate(false) // false = show progress UI
       break
     default:

@@ -1,6 +1,7 @@
 import { config } from '../package.json'
 
 import hooks from './hooks'
+import { runtimeSelfTest, type RuntimeSelfTestResult } from './utils/runtimeSelfTest'
 import { createZToolkit } from './utils/ztoolkit'
 
 import type { ColumnOptions, DialogHelper } from 'zotero-plugin-toolkit'
@@ -12,6 +13,8 @@ class Addon {
     // Env type, see build.js
     env: 'development' | 'production'
     initialized?: boolean
+    /** Bootstrap bridge outcome, exposed for diagnostics and the CI runtime smoke. */
+    runtimeBridge?: RuntimeBridgeReport
     ztoolkit: ZToolkit
     locale?: {
       current: any
@@ -26,7 +29,9 @@ class Addon {
   // Lifecycle hooks
   public hooks: typeof hooks
   // APIs
-  public api: object
+  public api: {
+    runtimeSelfTest: () => Promise<RuntimeSelfTestResult>
+  }
 
   constructor() {
     this.data = {
@@ -37,7 +42,7 @@ class Addon {
       ztoolkit: createZToolkit(),
     }
     this.hooks = hooks
-    this.api = {}
+    this.api = { runtimeSelfTest }
   }
 }
 

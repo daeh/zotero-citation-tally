@@ -80,7 +80,13 @@ class SemanticScholarClient {
       fetch: (url, init) => fetch(url, init),
       monotonicNow: () => (performance ? performance.now() : Temporal.Now.instant().epochMilliseconds),
       nowEpochMs: () => Temporal.Now.instant().epochMilliseconds,
-      createTimeoutSignal: (ms) => AbortSignal.timeout(ms),
+      // AbortSignal.timeout is Exposed=(Window,Worker) only, so it's missing in
+      // this sandbox realm; build the same thing from setTimeout, which is here.
+      createTimeoutSignal: (ms) => {
+        const controller = new AbortController()
+        setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), ms)
+        return controller.signal
+      },
       combineSignals: combineAbortSignals,
       sleep: interruptibleSleep,
       random: () => Math.random(),
@@ -255,4 +261,41 @@ class SemanticScholarClient {
   }
 }
 
-export const semanticScholarClient = new SemanticScholarClient()
+let instance: SemanticScholarClient | null = null
+let stopped = false
+
+/**
+ * The sole capability gate for Semantic Scholar features. The bootstrap bridge
+ * publishes this report; when it is absent or degraded, no code path may
+ * construct the client (the bridged globals are throwing tripwire stubs).
+ */
+export function isSemanticScholarAvailable(): boolean {
+  return _globalThis.__runtimeBridgeReport?.semanticScholarAvailable === true
+}
+
+/** Lazy singleton — nothing is constructed at bundle evaluation. */
+export function getSemanticScholarClient(): SemanticScholarClient {
+  if (!isSemanticScholarAvailable()) throw new Error('Semantic Scholar is unavailable in this Zotero runtime')
+  if (stopped) throw new Error('Semantic Scholar client is shut down')
+  instance ??= new SemanticScholarClient()
+  return instance
+}
+
+// Guard both flags: no-op when never constructed or already stopped.
+export function flushPendingSemanticScholarWarning(): void {
+  if (!stopped) instance?.flushPendingWarning()
+}
+
+export function closeSemanticScholarWarning(): void {
+  instance?.closeWarning()
+}
+
+/**
+ * `instance` is not nulled: late async continuations must keep seeing the
+ * aborted client rather than mint a fresh live one. Re-enable gets fresh module
+ * state because the bundle is re-evaluated per startup.
+ */
+export function shutdownSemanticScholarClient(): void {
+  stopped = true // set before abort, so getSemanticScholarClient() can't hand back a live client
+  instance?.shutdown()
+}

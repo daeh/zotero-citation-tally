@@ -1,7 +1,17 @@
 import { config } from '../../package.json'
 import { getPref, setPref } from '../utils/prefs'
 
-import { semanticScholarClient, type ValidationStatus } from './semanticScholarClient'
+import { SEMANTIC_SCHOLAR_DATABASE } from './citationTypes'
+import { notifySemanticScholarUnavailable } from './degradedNotice'
+import {
+  type CommitResult,
+  getSemanticScholarClient,
+  isSemanticScholarAvailable,
+  type ValidationStatus,
+} from './semanticScholarClient'
+
+/** Statuses shown in the API-key row beyond validation outcomes. */
+type ApiKeyUiStatus = ValidationStatus | 'checking' | 'neutral' | 'unavailable'
 
 // Preferences use a separate localization context, so these strings are local.
 function getPrefsString(key: string): string {
@@ -17,6 +27,7 @@ function getPrefsString(key: string): string {
     'pref-apikey-empty': 'No key set (using shared, unauthenticated access)',
     'pref-apikey-error': 'Semantic Scholar returned an unexpected error',
     'pref-apikey-checking': 'Checking…',
+    'pref-apikey-unavailable': 'Semantic Scholar is unavailable in this Zotero runtime',
   }
   return strings[key] || key
 }
@@ -37,12 +48,14 @@ function getApiKeyInput(window: Window): HTMLInputElement | null {
   return window.document?.querySelector<HTMLInputElement>(`#${apiKeyInputId}`) ?? null
 }
 
-function statusPresentation(status: ValidationStatus | 'checking' | 'neutral'): { text: string; color: string } {
+function statusPresentation(status: ApiKeyUiStatus): { text: string; color: string } {
   switch (status) {
     case 'valid':
       return { text: getPrefsString('pref-apikey-valid'), color: '#008000' }
     case 'invalid':
       return { text: getPrefsString('pref-apikey-invalid'), color: '#d70022' }
+    case 'unavailable':
+      return { text: getPrefsString('pref-apikey-unavailable'), color: '#d70022' }
     case 'client_error':
       return { text: getPrefsString('pref-apikey-error'), color: '#b8860b' }
     case 'indeterminate':
@@ -56,7 +69,7 @@ function statusPresentation(status: ValidationStatus | 'checking' | 'neutral'): 
   }
 }
 
-function renderApiKeyStatus(window: Window, status: ValidationStatus | 'checking' | 'neutral'): void {
+function renderApiKeyStatus(window: Window, status: ApiKeyUiStatus): void {
   const el = window.document?.querySelector<HTMLElement>(`#${apiKeyStatusId}`)
   if (!el) return
   const { text, color } = statusPresentation(status)
@@ -73,6 +86,11 @@ function setValidateEnabled(window: Window, enabled: boolean): void {
 async function commitAndRender(window: Window): Promise<void> {
   const input = getApiKeyInput(window)
   if (!input) return
+  if (!isSemanticScholarAvailable()) {
+    // Degraded runtime: no controller, no request; dirty/op/probe state untouched.
+    renderApiKeyStatus(window, 'unavailable')
+    return
+  }
   const revisionAtStart = apiKeyDraftRevision
   const op = ++apiKeyOpSeq
   // Repeated validation of the same value shares a live request; editing the field aborts it.
@@ -81,10 +99,23 @@ async function commitAndRender(window: Window): Promise<void> {
 
   renderApiKeyStatus(window, 'checking')
   setValidateEnabled(window, false)
-  const result = await semanticScholarClient.commitAndValidate(input.value, controller.signal).finally(() => {
-    // Controllers can outlive their requests, so only the newest operation may re-enable the button.
+  let result: CommitResult
+  try {
+    result = await getSemanticScholarClient()
+      .commitAndValidate(input.value, controller.signal)
+      .finally(() => {
+        // Controllers can outlive their requests, so only the newest operation may re-enable the button.
+        if (op === apiKeyOpSeq) setValidateEnabled(window, true)
+      })
+  } catch (e) {
+    // The pane must never stick at "Checking…"; apply the same stale-op guards as the success path.
+    ztoolkit.log(`API key validation failed unexpectedly: ${String(e)}`)
     if (op === apiKeyOpSeq) setValidateEnabled(window, true)
-  })
+    if (op !== apiKeyOpSeq) return
+    if (apiKeyDraftRevision !== revisionAtStart) return
+    renderApiKeyStatus(window, 'client_error')
+    return
+  }
 
   // Ignore results superseded by a newer request or edit.
   if (op !== apiKeyOpSeq) return
@@ -117,6 +148,18 @@ function bindApiKeyField(window: Window): void {
   input.value = (getPref('semanticScholarApiKey') || '').trim()
   apiKeyDirty = false
   apiKeyDraftRevision++
+
+  if (!isSemanticScholarAvailable()) {
+    // Degraded runtime: the key can be neither validated nor used — disable
+    // the controls and skip the edit/validate listeners entirely.
+    input.disabled = true
+    setValidateEnabled(window, false)
+    const showBtn = window.document?.querySelector<XULButtonElement>(`#${apiKeyShowId}`)
+    if (showBtn) showBtn.disabled = true
+    renderApiKeyStatus(window, 'unavailable')
+    return
+  }
+
   renderApiKeyStatus(window, input.value === '' ? 'empty' : 'neutral')
   setValidateEnabled(window, true)
 
@@ -308,4 +351,10 @@ export function validateDatabaseOrder(window: Window, andSave: boolean = true) {
   const validation: Validation = validateDatabaseOrderValue(inputValue, andSave)
 
   validationMarkup(validation, inputElement, statusElement)
+
+  // Saving an order that includes Semantic Scholar while the runtime cannot
+  // support it warrants an immediate notice (configure-after-startup path).
+  if (andSave && validation.valid && inputValue.includes(SEMANTIC_SCHOLAR_DATABASE)) {
+    notifySemanticScholarUnavailable()
+  }
 }

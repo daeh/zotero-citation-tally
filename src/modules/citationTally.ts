@@ -4,8 +4,10 @@ import { getPref, setPref } from '../utils/prefs'
 import { retryAgeExceeded } from '../utils/retryAge'
 import { parseLastCheckedInstant } from '../utils/temporalParse'
 
+import { effectiveDatabases, semanticScholarUnavailableResult } from './citationTypes'
+import { notifySemanticScholarUnavailable } from './degradedNotice'
 import { getIgnorePolicy } from './ignorePolicy'
-import { semanticScholarClient } from './semanticScholarClient'
+import { getSemanticScholarClient, isSemanticScholarAvailable } from './semanticScholarClient'
 
 import type { ItemIdentifier, LookupResult } from './citationTypes'
 
@@ -263,11 +265,10 @@ class IgnoredItemsManager {
 
 // Schedule monthly cleanup
 let cleanupTimer: NodeJS.Timeout | null = null
+let cleanupStartupTimer: NodeJS.Timeout | null = null
 
 function scheduleMonthlyCleanup() {
-  if (cleanupTimer) {
-    clearInterval(cleanupTimer)
-  }
+  cancelMonthlyCleanup()
 
   // Run cleanup every 30 days (30 * 24 * 60 * 60 * 1000 ms)
   cleanupTimer = setInterval(
@@ -278,9 +279,22 @@ function scheduleMonthlyCleanup() {
   )
 
   // Also run cleanup on startup
-  setTimeout(() => {
+  cleanupStartupTimer = setTimeout(() => {
+    cleanupStartupTimer = null
     void IgnoredItemsManager.cleanupNonExistentItems()
   }, 5000) // Delay 5 seconds after startup
+}
+
+/** Untracked, these timers would survive disable and mutate the ignore cache. */
+function cancelMonthlyCleanup() {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer)
+    cleanupTimer = null
+  }
+  if (cleanupStartupTimer) {
+    clearTimeout(cleanupStartupTimer)
+    cleanupStartupTimer = null
+  }
 }
 
 // Operation display names (lazy-loaded to avoid startup issues)
@@ -545,15 +559,19 @@ class Helpers {
   }
 
   static getDatabaseArray(operations: string[] | string | undefined): string[] {
+    let configured: string[]
     if (operations === undefined) {
-      return Helpers.getDatabasePrefArray()
+      configured = Helpers.getDatabasePrefArray()
     } else if (typeof operations === 'string') {
-      return operations.split(',').map((db: string) => db.trim())
+      configured = operations.split(',').map((db: string) => db.trim())
     } else if (Array.isArray(operations)) {
-      return operations.map((db: string) => db.trim())
+      configured = operations.map((db: string) => db.trim())
+    } else {
+      ztoolkit.log('Citation debug - No databases found')
+      return []
     }
-    ztoolkit.log('Citation debug - No databases found')
-    return []
+    // Drop databases this runtime can't support (see effectiveDatabases).
+    return effectiveDatabases(configured, isSemanticScholarAvailable())
   }
 }
 interface CountInfo {
@@ -916,9 +934,12 @@ class DBInterface {
    * @returns LookupResult with count and status
    */
   static async getSemanticScholarCountEnhanced(item: Zotero.Item): Promise<LookupResult> {
+    // The scheduling filters should already keep this off the degraded path;
+    // if one is missed, return a result that never persists an item ignore.
+    if (!isSemanticScholarAvailable()) return semanticScholarUnavailableResult()
     // The dedicated client handles authentication, pacing, retries, and identifier fallback.
     const identifiers = Helpers.getAllItemIdentifiers(item)
-    return semanticScholarClient.lookupCitationCount(identifiers)
+    return getSemanticScholarClient().lookupCitationCount(identifiers)
   }
 }
 
@@ -933,9 +954,10 @@ const notifierCallback = {
         return
       }
 
+      // Items.get() returns false for an ID that no longer resolves.
       const items = ids
         .map((id) => Zotero.Items.get(id as number))
-        .filter((item) => !item.isFeedItem && item.isRegularItem())
+        .filter((item): item is Zotero.Item => item !== false && !item.isFeedItem && item.isRegularItem())
       if (items.length > 0) {
         ztoolkit.log(
           'New regular items added with IDs:',
@@ -953,6 +975,11 @@ let currentIndex = -1
 let totalItems = 0
 let itemsToUpdate: Zotero.Item[] = []
 let updatedCount = 0
+
+/** Close the manual update progress window and drop queue state (shutdown path). */
+function cancelManualUpdate() {
+  resetState()
+}
 
 /**
  * Reset the state of the citation count update process
@@ -993,6 +1020,14 @@ function updateItems(items: Zotero.Item[], operations?: string[] | string, silen
     return
   }
 
+  const databases = Helpers.getDatabaseArray(operations)
+  if (databases.length === 0) {
+    // Nothing configured, or nothing this runtime supports — bail before the
+    // progress window opens. The user entry points show the degraded notice.
+    ztoolkit.log('Citation debug - No effective databases; skipping update queue')
+    return
+  }
+
   resetState()
   totalItems = regularItems.length
   itemsToUpdate = regularItems
@@ -1014,7 +1049,7 @@ function updateItems(items: Zotero.Item[], operations?: string[] | string, silen
 /** Process manual updates sequentially until the queue completes or is cancelled. */
 async function runUpdateQueue(operations?: string[] | string, silent: boolean = false): Promise<void> {
   for (currentIndex = 0; currentIndex < totalItems; currentIndex++) {
-    if (semanticScholarClient.shutdownSignal.aborted) break
+    if (!addon.data.alive) break
 
     if (!silent && progressWindow) {
       const percent = Math.round((currentIndex / totalItems) * 100)
@@ -1038,7 +1073,7 @@ async function runUpdateQueue(operations?: string[] | string, silent: boolean = 
     progressWindow.close()
     progressWindow = null
   }
-  if (!silent && !semanticScholarClient.shutdownSignal.aborted) {
+  if (!silent && addon.data.alive) {
     const successWindow = new ztoolkit.ProgressWindow(addon.data.config.addonName)
     successWindow.createLine({
       text: getString('progress-items-updated', { args: { count: updatedCount } }),
@@ -1092,6 +1127,9 @@ async function updateItem(
         continue
       }
 
+      // Once the plugin is shut down, don't write to the ignore cache or the item.
+      if (!addon.data.alive) return
+
       if (result.status === 'success' && result.count >= 0) {
         IgnoredItemsManager.clearIgnoredItem(item.id, operation)
         data.push({ title: displayName, count: result.count })
@@ -1108,6 +1146,7 @@ async function updateItem(
       }
     }
 
+    if (!addon.data.alive) return
     if (data.length > 0) {
       await Core.setCitationCount(item, data)
       updatedCount++
@@ -1175,7 +1214,9 @@ class UIRegistrar {
             ztoolkit.log('Citation debug - Parent item ID:', parentItemID)
             if (parentItemID) {
               const parentItem = Zotero.Items.get(parentItemID)
-              ztoolkit.log('Citation debug - Parent item type:', parentItem.itemTypeID)
+              if (parentItem) {
+                ztoolkit.log('Citation debug - Parent item type:', parentItem.itemTypeID)
+              }
             }
           }
         } catch (error) {
@@ -1328,8 +1369,13 @@ class UX {
    * Update citation counts for all selected items
    */
   static updateSelectedItemsCitationCounts() {
-    // Get selected items
-    const items = Zotero.getActiveZoteroPane().getSelectedItems()
+    // Surface the runtime-degraded state at action time (no-op in full mode).
+    notifySemanticScholarUnavailable()
+
+    // Get selected items. No active pane means nothing is selected.
+    const zoteroPane = Zotero.getActiveZoteroPane()
+    if (!zoteroPane) return
+    const items = zoteroPane.getSelectedItems()
 
     // // Log diagnostic info about the selected items
     // ztoolkit.log('Citation debug - Selected items count:', items.length)
@@ -1397,4 +1443,15 @@ class UX {
 }
 
 // Export functions needed by autoupdate module
-export { DBInterface, Core, Helpers, UIRegistrar, BasicRegistrar, UX, updateItem, scheduleMonthlyCleanup }
+export {
+  DBInterface,
+  Core,
+  Helpers,
+  UIRegistrar,
+  BasicRegistrar,
+  UX,
+  updateItem,
+  scheduleMonthlyCleanup,
+  cancelMonthlyCleanup,
+  cancelManualUpdate,
+}

@@ -21,6 +21,8 @@ export default defineConfig({
       homepage: pkg.homepage,
       buildVersion: pkg.version,
       buildTime: '{{buildTime}}',
+      // Substituted into raw assets (bootstrap.js) — the bundle gets __env__ from esbuild below.
+      buildEnv: process.env.NODE_ENV === 'development' ? 'development' : 'production',
     },
     prefs: {
       prefix: pkg.config.prefsPrefix,
@@ -39,6 +41,12 @@ export default defineConfig({
   },
 
   test: {
+    // Only this directory is bundled into the Zotero test window; the Node
+    // unit tests under test/ must not be swept into the browser environment.
+    entries: 'test/zotero',
+    mocha: {
+      timeout: 30000,
+    },
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
   },
 

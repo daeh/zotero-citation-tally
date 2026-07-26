@@ -5,7 +5,8 @@ import { retryAgeExceeded } from '../utils/retryAge'
 import { parseCitationStampDate, parseDateAddedInstant, parseLastCheckedInstant } from '../utils/temporalParse'
 
 import { Helpers, updateItem } from './citationTally'
-import { semanticScholarClient } from './semanticScholarClient'
+import { effectiveDatabases } from './citationTypes'
+import { isSemanticScholarAvailable } from './semanticScholarClient'
 
 // Ignored items data type
 type IgnoredItemsData = Record<
@@ -43,7 +44,14 @@ function compareByDateAddedDesc(a: Zotero.Item, b: Zotero.Item): number {
 // Check if item is ignored for any configured database
 function isItemIgnoredForAutoupdate(itemId: number): boolean {
   const databaseOrder = getPref('databaseOrder') || 'crossref'
-  const databases = databaseOrder.split(',').map((db: string) => db.trim())
+  const databases = effectiveDatabases(
+    databaseOrder.split(',').map((db: string) => db.trim()),
+    isSemanticScholarAvailable(),
+  )
+  // With no runtime-supported database, nothing is checkable for any item.
+  if (databases.length === 0) {
+    return true
+  }
 
   // Check if item is ignored across all databases
 
@@ -119,7 +127,7 @@ const RETRY_DELAY = 5000 // 5 seconds
 
 /** Schedule one queue step and retain its timer so shutdown can cancel it. */
 function scheduleNext(silent: boolean, delay: number): void {
-  if (semanticScholarClient.shutdownSignal.aborted) {
+  if (!addon.data.alive) {
     finishAutomaticUpdate(undefined, silent)
     return
   }
@@ -147,13 +155,21 @@ function cancelAutomaticUpdate(): void {
  * @returns true if data is outdated or missing for any checkable database
  */
 function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
+  const databaseOrder = getPref('databaseOrder') || 'crossref'
+  const databases = effectiveDatabases(
+    databaseOrder.split(',').map((db: string) => db.trim()),
+    isSemanticScholarAvailable(),
+  )
+  // With no supported database nothing can be outdated. Checked ahead of the
+  // empty-`extra` return below, or such items would still queue.
+  if (databases.length === 0) {
+    return [false, 'no_effective_databases']
+  }
+
   const extra = item.getField('extra')
   if (!extra) {
     return [true, 'no_extra_field']
   }
-
-  const databaseOrder = getPref('databaseOrder') || 'crossref'
-  const databases = databaseOrder.split(',').map((db: string) => db.trim())
 
   // A stamp on the cutoff date remains current; Temporal constrains month-end arithmetic.
   const cutoffDate = Temporal.Now.plainDateISO().subtract({
@@ -389,6 +405,9 @@ async function startAutomaticUpdate(silent: boolean = false) {
   try {
     const itemsToUpdate = await getItemsNeedingUpdate()
 
+    // The library scan can span a disable; nothing may be scheduled after it.
+    if (!addon.data.alive) return
+
     if (itemsToUpdate.length === 0) {
       ztoolkit.log('Auto update: No items need updating')
       return
@@ -411,7 +430,7 @@ async function startAutomaticUpdate(silent: boolean = false) {
     // Start processing with a delay to allow Zotero to fully initialize
     autoUpdateTimer = setTimeout(() => {
       autoUpdateTimer = null
-      if (semanticScholarClient.shutdownSignal.aborted) {
+      if (!addon.data.alive) {
         finishAutomaticUpdate(undefined, silent)
         return
       }
@@ -445,7 +464,7 @@ async function startAutomaticUpdate(silent: boolean = false) {
  * Process the automatic update queue with robust error handling
  */
 async function processAutoUpdateQueue(silent: boolean = false) {
-  if (semanticScholarClient.shutdownSignal.aborted) {
+  if (!addon.data.alive) {
     finishAutomaticUpdate(undefined, silent)
     return
   }
@@ -499,6 +518,12 @@ async function processAutoUpdateQueue(silent: boolean = false) {
     }
 
     await updateItem(item, undefined, true)
+
+    // A shutdown during the item's fetches must not advance or reschedule the queue.
+    if (!addon.data.alive) {
+      finishAutomaticUpdate(undefined, silent)
+      return
+    }
 
     autoUpdateIndex++
 

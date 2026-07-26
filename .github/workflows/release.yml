@@ -12,6 +12,8 @@ permissions:
 jobs:
   notify:
     runs-on: ubuntu-latest
+    # Never announce prereleases (e.g. v0.0.15-rc candidate builds) as resolved.
+    if: github.event.release.prerelease == false
     steps:
       - name: Notify release
         uses: apexskier/github-release-commenter@v1
