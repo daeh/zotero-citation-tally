@@ -9,11 +9,11 @@ export interface RuntimeSelfTestResult {
 }
 
 /**
- * Exercises the bridged Web APIs from inside the plugin bundle realm — where
- * production code runs, and which a test-window realm can't stand in for. The
- * fetch is passed a signal that is already aborted, so it rejects with
- * AbortError without touching the network; the `.invalid` host makes sure of
- * that even if the signal were somehow ignored.
+ * Exercises the bridged Web APIs from inside the plugin bundle realm, which is
+ * where production code runs and which a test-window realm can't stand in for.
+ * The fetch gets a signal that is already aborted, so it rejects with AbortError
+ * without touching the network. The `.invalid` host makes sure of that even if
+ * the signal were somehow ignored.
  */
 export async function runtimeSelfTest(): Promise<RuntimeSelfTestResult> {
   const provider = _globalThis.__runtimeBridgeReport?.provider ?? 'missing-report'

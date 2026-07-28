@@ -8,14 +8,14 @@
 
 ![Screenshot](docs/assets/readme/screenshot.png)
 
-This is a plugin for [Zotero](https://www.zotero.org), a research source management tool. The _CitationTally_ plugin automatically fetches and displays citation counts for research papers in your library from multiple academic databases.
+This is a plugin for [Zotero](https://www.zotero.org), a research source management tool. The _Citation Tally_ plugin automatically fetches and displays citation counts for research papers in your library from multiple academic databases.
 
 ## Plugin Functions
 
 - **Automatic Citation Tracking** - Fetches citation counts when new items are added to your library
 - **Smart Auto-Updates** - Keeps citation data current with configurable update schedules
 - **Visual Integration** - Adds a sortable "Citations" column to your Zotero library view
-- **Multiple Databases** - Queries Crossref, Semantic Scholar, and INSPIRE in configurable order
+- **Multiple Databases** - Shows counts from Crossref, Semantic Scholar, and INSPIRE side by side
 - **Intelligent Rate Limiting** - Respects API limits with adaptive throttling
 - **Persistent Storage** - Stores citation data in item's Extra field for sync compatibility
 
@@ -25,7 +25,7 @@ Please post any bugs, questions, or feature requests in the [GitHub issues](http
 
 - Download the plugin (the `.xpi` file) from the [latest release](https://github.com/daeh/zotero-citation-tally/releases/latest)
 - Open Zotero
-- From `Tools -> Plugins`
+- From `Tools → Plugins`
 - Select `Install Plugin From File...` from the gear icon ⛭
 - Choose the `.xpi` file you downloaded (e.g. `citation-tally.xpi`)
 - Restart Zotero
@@ -37,47 +37,60 @@ Please post any bugs, questions, or feature requests in the [GitHub issues](http
 
 ## Setup and Configuration
 
-Once installed, the plugin will automatically begin tracking citation counts for items in your library.
+Citation Tally tallies bibliographic items as you add them. It does not automatically backfill items already in your libraries. To update existing items in My Library, run `Tools → Retally outdated item citations`, which scans for counts that are missing or older than the configured cutoff. For editable items in other libraries, select them, right-click, and choose "Update Citation Tallies".
 
 ### Initial Setup
 
-- **Plugin Activation**: After installation and restart, the plugin will automatically add a "Citations" column to your Zotero library view.
-  - The citation count column should automatically appear in your library view.
-    - (If you don't see the column, right click the column titles and check "Citations")
+- After installation, restart the Zotero app. The plugin adds a "Citations" column to your Zotero library view.
+
+  - If you don't see the column, right-click the column titles and check "Citations".
 
     ![show Citations column](docs/assets/readme/show-column.png)
 
-- **Preferences Access**: Configure the plugin by going to `Zotero -> Settings -> Citation Tally` on MacOS ( `Edit -> Preferences -> Citation Tally` on linux).
+- Configure the plugin from `Zotero → Settings → Citation Tally` on macOS, or `Edit → Settings → Citation Tally` on Windows and Linux.
 
 ### Automatic Behavior
 
-- **New Items**: Citation counts are automatically fetched when items with DOIs or arXiv IDs are added
-- **Auto-Updates**: Can be configured to update outdated citations on Zotero startup
-- **Smart Scheduling**: Items are processed from newest to oldest based on when they were added to your library
+- **New Items**: Citation counts are fetched for newly added bibliographic items with DOIs or arXiv IDs, in My Library or a group library you can edit. Feed items are skipped. This is on by default.
+- **Auto-Updates**: Missing and outdated counts in My Library can be refreshed the next time Zotero starts. This is off by default.
 
 ### Manual Actions
 
 - **Update Selected Items**: Right-click → "Update Citation Tallies"
-  - **_NB_** Manual updates bypass all retry restrictions and cooldown periods
+
+  - **_NB_** Selected-item updates bypass the retry schedule, and can update editable items outside My Library
 
 - **Update All Outdated**: Tools menu → "Retally outdated item citations"
-  - This runs at startup but you can also trigger it manually.
+
+  - Scans My Library for counts that are missing or older than the configured cutoff. This runs whether or not automatic updates are switched on.
 
 ### Configuration Options
 
 <details>
 
-<summary>Database Settings</summary>
+<summary>Citation Databases</summary>
 
-- **Database Priority Order**: Configure which databases to query and in what order. The plugin will try each database until it finds citation data.
-  - Default order: `crossref, semanticscholar, inspire`
-  - You can reorder these based on your field and preferences
-  - For physics papers, you might prefer: `inspire, crossref, semanticscholar`
-  - For general academic papers: `crossref, semanticscholar`
+- **Databases**: Which databases to use. Their counts appear in the Citations column in the order you list them, separated by `|`. Hover a cell to see which database each number came from.
+  - Default: `crossref, semanticscholar`
+  - For physics papers you might prefer `inspire, crossref, semanticscholar`
 
-- **Automatic Updates**: Enable automatic citation updates on startup for outdated items
-- **Adaptive Rate Limiting**: Crossref and INSPIRE increase their delays when throttled and ease off after successful requests. Semantic Scholar uses a separate scheduler and backoff policy; see [Rate Limiting](#rate-limiting).
-- **Database-Specific Rate Limits**: Configure individual base rate limits for each database (Crossref, INSPIRE, Semantic Scholar)
+</details>
+
+<details>
+
+<summary>Automatic Updates</summary>
+
+- **Fetch tallies for new items**: On by default. Turn it off to stop counts being fetched as you add items.
+- **Automatic updates**: Off by default. Set it to refresh missing and outdated counts in My Library the next time Zotero starts.
+- **Consider citations outdated after**: How old a count can be before it is considered outdated — 3, 6, 12, or 24 months. The default is 6. This applies both to startup updates and to `Tools → Retally outdated item citations`.
+
+</details>
+
+<details>
+
+<summary>Display Options</summary>
+
+- **Colors**: On by default. Each database's count gets its own color when more than one database is shown; turn it off to display every count in the default color.
 
 </details>
 
@@ -85,10 +98,10 @@ Once installed, the plugin will automatically begin tracking citation counts for
 
 <summary>API Keys</summary>
 
-- **Semantic Scholar API key** (optional): Enter a key under `Settings → Citation Tally → API keys`. Without one, requests use Semantic Scholar's shared, unauthenticated access.
+- **Semantic Scholar API key** (optional, but recommended): Enter a key under `Settings → Citation Tally → API keys`. Without one, requests share Semantic Scholar's anonymous pool with every other client using it, so lookups are slower and less reliable.
   - Request a key at [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api).
-  - **Validate** checks the key. **Show** reveals the field value.
-  - Zotero stores the key in its local preferences without encryption. Citation Tally sends it only to Semantic Scholar in the `x-api-key` header. If the service rejects it, the plugin switches to unauthenticated access and displays a warning.
+  - Zotero stores the key unencrypted in its local preferences. Citation Tally sends it only to Semantic Scholar.
+  - If Semantic Scholar rejects the key twice in a row, the plugin stops using it, carries on anonymously, and tries it again after a cooldown. A single rejection triggers one confirming request rather than pausing the key.
 
 </details>
 
@@ -98,66 +111,48 @@ Once installed, the plugin will automatically begin tracking citation counts for
 
 <summary>Common Issues</summary>
 
-- **No citation data found**: The plugin requires items to have DOIs, arXiv IDs, or other identifiers that databases can match. Journal articles, conference papers, and books with DOIs work best. Items like web pages, theses, or older publications without digital identifiers may not have citation data available in academic databases.
-- **Rate limiting**: Each database paces its own requests. Crossref and INSPIRE increase delays up to 10× when throttled and ease off after successful requests. Semantic Scholar retries transient failures with exponential backoff and honors the server's `Retry-After` header. Large updates may take time. Items not found in a database are retried at increasing intervals.
+- **No citation data found**: Citation Tally looks items up by DOI or arXiv ID only, not by title, ISBN, PMID, or a database's own record ID. Journal articles and conference papers usually carry a DOI; web pages, theses, and datasets often carry neither identifier.
+- **Updates are slow**: Each database paces its own requests and the plugin backs off further when a server throttles it, so a large update can take a while. See [Rate Limiting](#rate-limiting) and [Retries](#retries).
+- **Semantic Scholar has been turned off**: If Zotero's plugin runtime doesn't provide the web APIs the Semantic Scholar client needs, Citation Tally disables that database, shows a notice, and carries on with the other databases you have configured.
 - **Network issues**: Ensure Zotero has internet access and your firewall isn't blocking requests to academic databases.
 
 </details>
 
+### Advanced Behavior
+
 <details>
-<summary>Advanced Features & Behavior</summary>
 
-### Intelligent Retry System
+<summary>Retries, rate limiting, and identifiers</summary>
 
-The plugin tracks items that fail to return citation data and intelligently schedules retries:
+#### Retries
 
-- **Not Found Items**:
-  - 1st attempt: Wait 7 days
-  - 2nd attempt: Wait 30 days
-  - 3rd attempt: Wait 90 days
-  - 4+ attempts: Wait 180 days
-- **Manual Override**: Right-click updates bypass all retry restrictions
+Startup updates and `Tools → Retally outdated item citations` both scan My Library, and both back off when a database comes up empty: 7 days after the first failure, then 30, then 90, then 180 days for every attempt after that. API errors hit during a scan follow the same schedule.
 
-### Rate Limiting
+#### Rate Limiting
 
-**Crossref and INSPIRE** use adaptive throttling:
+Crossref and INSPIRE each start at one request per second, and are throttled independently. A rate-limit error multiplies the delay by 1.5, up to ten times the base; each success eases it back by 0.9, never below the base.
 
-**Base Delays:**
+Semantic Scholar runs its own scheduler: at least 1 second between requests made with an API key, and at least 3 seconds without one. Transient failures back off exponentially with full jitter, never sooner than the server's `Retry-After`.
 
-- Crossref: 1 second
-- INSPIRE: 1 second
+#### Other Behavior
 
-**Adaptive Behavior:**
+- If an item has no usable identifier for a database, a library scan skips that item–database pair for the rest of the Zotero session. Selected-item updates do not consult this cache.
+- A library scan does not start updating items if Zotero is already offline, and stops before the next item if Zotero goes offline during the run.
+- Retry records for deleted items are cleared out shortly after startup and every 30 days. Counts already written to the Extra field are left alone.
 
-- Increases delay by 1.5× on rate-limit errors (up to 10× maximum)
-- Decreases by 0.9× on successful requests
-- Maintains separate multipliers for each database
+#### Supported Identifiers
 
-**Semantic Scholar** uses one request scheduler. It leaves at least 1 second between requests made with an API key and at least 3 seconds between unauthenticated requests. Transient failures use full-jitter exponential backoff, with `Retry-After` as the minimum delay.
+Crossref needs a DOI. INSPIRE and Semantic Scholar can also use an arXiv ID.
 
-### Performance Optimizations
-
-- **Session Caching**: Items without identifiers are cached for the session
-- **Progress Indicators**: Real-time updates during bulk operations
-- **Network Detection**: Pauses and retries when network is unavailable
-- **Automatic Cleanup**: Monthly removal of data for deleted library items
-
-### Supported Identifiers
-
-The plugin can fetch citations for items with:
-
-- DOIs (Digital Object Identifiers)
-- arXiv IDs
-- INSPIRE record IDs
-- Semantic Scholar paper IDs
+Citation Tally reads the DOI field, then looks for an arXiv ID in Archive ID, Report Number, Extra, URL, and Call Number, in that order.
 
 </details>
 
 ## Supported Databases
 
-- **[Crossref](https://www.crossref.org/)**: Comprehensive database for scholarly publications with DOIs
-- **[Semantic Scholar](https://www.semanticscholar.org/)**: AI-powered academic search engine with citation analysis
-- **[INSPIRE](https://inspirehep.net/)**: High-energy physics literature database
+- **[Crossref](https://www.crossref.org/)**: DOI registration agency; broad coverage of journal and conference publications
+- **[Semantic Scholar](https://www.semanticscholar.org/)**: Academic search index run by AI2, with citation graph data
+- **[INSPIRE](https://inspirehep.net/)**: High-energy physics literature
 
 ## Related Projects
 
@@ -176,4 +171,4 @@ Distributed under the GNU Affero General Public License v3.0.
 
 ## Author
 
-[![Personal Website](https://img.shields.io/badge/personal%20website-daeh.info-orange?style=for-the-badge)](https://daeh.info) [![BlueSky](https://img.shields.io/badge/bsky-@dae.bsky.social-skyblue?style=for-the-badge&logo=bluesky)](https://bsky.app/profile/dae.bsky.social)
+[![Personal Website](https://img.shields.io/badge/personal%20website-daeh.info-orange?style=for-the-badge)](https://daeh.info) [![Bluesky](https://img.shields.io/badge/bsky-@dae.bsky.social-skyblue?style=for-the-badge&logo=bluesky)](https://bsky.app/profile/dae.bsky.social)

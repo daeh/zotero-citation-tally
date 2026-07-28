@@ -10,83 +10,93 @@
 <vbox onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })">
   <groupbox>
     <label
-      value="Citation Databases"
+      data-l10n-id="pref-citation-databases"
       style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
     <html:div class="__addonRef__-pref-options-div">
       <groupbox>
-        <description style="margin: 5px 0">Enter 1-3 databases separated by commas </description>
-        <html:div style="margin-bottom: 5px; min-height: 20px; margin-top: 5px; text-align: center; width: 100%"> Options: <html:code>crossref, semanticscholar, inspire</html:code> </html:div>
+        <description
+          data-l10n-id="pref-database-instructions"
+          style="margin: 5px 0" />
+        <html:div style="margin-bottom: 5px; min-height: 20px; margin-top: 5px; text-align: center; width: 100%">
+          <html:span
+            data-l10n-id="pref-database-options-label"
+            class="__addonRef__-pref-options-label"></html:span>
+          <html:code>crossref, semanticscholar, inspire</html:code>
+        </html:div>
         <hbox
           align="center"
           style="margin-bottom: 10px">
           <html:input
             type="text"
             id="zotero-prefpane-__addonRef__-databaseOrderExposed"
+            data-l10n-id="pref-database-field"
             value="crossref"
-            style="flex: 1; min-width: 300px; padding: 4px"
-            placeholder="crossref, semanticscholar" />
+            style="flex: 1; min-width: 300px; padding: 4px" />
           <button
             id="zotero-prefpane-__addonRef__-validate-databases"
-            label="Validate"
+            data-l10n-id="pref-validate-button"
             style="margin-left: 10px"
             oncommand="Zotero.__addonInstance__.hooks.onPrefsEvent('validateDatabases', { window })" />
         </hbox>
         <html:div
           id="zotero-prefpane-__addonRef__-database-status"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
           style="margin-bottom: 5px; min-height: 20px; margin-top: 0px">
         </html:div>
       </groupbox>
     </html:div>
 
     <label
-      value="Autoupdate Tallies"
+      data-l10n-id="pref-auto-update-settings"
       style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
     <html:div class="__addonRef__-pref-options-div">
       <groupbox>
-        <description>Automatically fetch citation tallies for new items</description>
+        <description data-l10n-id="pref-fetch-on-add" />
         <radiogroup
           id="zotero-prefpane-__addonRef__-fetchOnAdd"
           preference="fetchOnAdd">
           <radio
-            label="Fetch tallies when items are added"
+            data-l10n-id="pref-fetch-on-add-enabled"
             value="true" />
           <radio
-            label="Don't fetch tallies for new items"
+            data-l10n-id="pref-fetch-on-add-disabled"
             value="false" />
         </radiogroup>
 
-        <description style="margin-top: 8px">Automatically update citation tallies for items in your library</description>
+        <description
+          data-l10n-id="pref-auto-update-description"
+          style="margin-top: 8px" />
         <radiogroup
           id="zotero-prefpane-__addonRef__-autoUpdate"
           preference="autoUpdate">
           <radio
-            label="Don't auto-update"
+            data-l10n-id="pref-auto-update-never"
             value="never" />
           <radio
-            label="Auto-update on startup"
+            data-l10n-id="pref-auto-update-startup"
             value="startup" />
         </radiogroup>
 
-        <!-- <separator style="margin: 5px 0" /> -->
-
         <label
-          value="Update tallies older than:"
+          data-l10n-id="pref-auto-update-cutoff-label"
           style="margin-top: 5px" />
         <menulist
           id="zotero-prefpane-__addonRef__-autoUpdateCutoff"
           preference="autoUpdateCutoff">
           <menupopup>
             <menuitem
-              label="3 months"
+              data-l10n-id="pref-auto-update-cutoff-3"
               value="3" />
             <menuitem
-              label="6 months"
+              data-l10n-id="pref-auto-update-cutoff-6"
               value="6" />
             <menuitem
-              label="12 months"
+              data-l10n-id="pref-auto-update-cutoff-12"
               value="12" />
             <menuitem
-              label="24 months"
+              data-l10n-id="pref-auto-update-cutoff-24"
               value="24" />
           </menupopup>
         </menulist>
@@ -94,68 +104,70 @@
     </html:div>
 
     <label
-      value="Display Options (requires restart)"
+      data-l10n-id="pref-color-settings"
       style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
     <html:div class="__addonRef__-pref-options-div">
       <groupbox>
-        <description>Color tallies in column</description>
+        <description data-l10n-id="pref-color-description" />
         <radiogroup
           id="zotero-prefpane-__addonRef__-useColors"
           preference="useColors">
           <radio
-            label="Use colors for different databases"
+            data-l10n-id="pref-use-colors"
             value="color" />
           <radio
-            label="Display without colors"
+            data-l10n-id="pref-no-colors"
             value="nocolor" />
         </radiogroup>
       </groupbox>
     </html:div>
 
     <label
-      value="API keys"
+      data-l10n-id="pref-apikeys-heading"
       style="font-weight: bold; margin-top: 10px; margin-left: 10px" />
     <html:div class="__addonRef__-pref-options-div">
       <groupbox>
-        <description style="margin: 5px 0">Optional. Get a free key at semanticscholar.org/product/api. Leave blank to use shared, unauthenticated access.</description>
-        <html:div style="margin-bottom: 5px; font-size: 90%; opacity: 0.75"
-          >Stored locally in Zotero preferences, unencrypted; masking only guards against shoulder-surfing. While enabled, the key is sent to Semantic Scholar as the x-api-key header for citation
-          lookups and validation; an edited key is validated automatically on Enter, when you activate Validate, and when focus leaves the key controls — closing the pane saves a still-dirty key
-          without validating.</html:div
-        >
+        <description
+          data-l10n-id="pref-apikey-intro"
+          style="margin: 5px 0" />
+        <html:div
+          data-l10n-id="pref-apikey-storage"
+          style="margin-bottom: 5px; font-size: 90%; opacity: 0.75"></html:div>
         <hbox
           id="zotero-prefpane-__addonRef__-semanticScholarApiKey-group"
           align="center"
           style="margin-bottom: 10px">
           <html:label
+            data-l10n-id="pref-apikey-label"
             for="zotero-prefpane-__addonRef__-semanticScholarApiKey"
-            style="margin-right: 8px"
-            >Semantic Scholar</html:label
-          >
+            style="margin-right: 8px"></html:label>
           <html:input
             type="password"
             id="zotero-prefpane-__addonRef__-semanticScholarApiKey"
+            class="__addonRef__-pref-apikey-input"
+            data-l10n-id="pref-apikey-field"
             autocomplete="off"
             spellcheck="false"
-            style="flex: 1; min-width: 240px; padding: 4px"
-            placeholder="Semantic Scholar API key" />
-          <button
-            id="zotero-prefpane-__addonRef__-semanticScholarApiKey-show"
-            label="Show"
-            aria-pressed="false"
-            aria-controls="zotero-prefpane-__addonRef__-semanticScholarApiKey"
-            style="margin-left: 8px"
-            oncommand="Zotero.__addonInstance__.hooks.onPrefsEvent('toggleApiKeyVisibility', { window })" />
+            style="flex: 1; min-width: 240px" />
           <button
             id="zotero-prefpane-__addonRef__-semanticScholarApiKey-validate"
-            label="Validate"
+            data-l10n-id="pref-validate-button"
             style="margin-left: 8px"
             oncommand="Zotero.__addonInstance__.hooks.onPrefsEvent('validateApiKey', { window })" />
         </hbox>
         <html:div
           id="zotero-prefpane-__addonRef__-semanticScholarApiKey-status"
+          role="status"
           aria-live="polite"
+          aria-atomic="true"
           style="margin-bottom: 5px; min-height: 20px; margin-top: 0px">
+          <html:span id="zotero-prefpane-__addonRef__-semanticScholarApiKey-status-text"></html:span>
+          <html:span
+            id="zotero-prefpane-__addonRef__-semanticScholarApiKey-status-detail"
+            class="__addonRef__-status-part"></html:span>
+          <html:span
+            id="zotero-prefpane-__addonRef__-semanticScholarApiKey-status-cleaned"
+            class="__addonRef__-status-part"></html:span>
         </html:div>
       </groupbox>
     </html:div>

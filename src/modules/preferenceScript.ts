@@ -1,42 +1,39 @@
 import { config } from '../../package.json'
+import { normalizeApiKey } from '../utils/apiKey'
+import { getLocaleID } from '../utils/locale'
 import { getPref, setPref } from '../utils/prefs'
 
 import { SEMANTIC_SCHOLAR_DATABASE } from './citationTypes'
 import { notifySemanticScholarUnavailable } from './degradedNotice'
 import {
-  type CommitResult,
-  getSemanticScholarClient,
-  isSemanticScholarAvailable,
-  type ValidationStatus,
-} from './semanticScholarClient'
+  apiKeyStatusMessage,
+  apiKeyStatusTone,
+  type ApiKeyUiStatus,
+  cleanedCharactersMessage,
+  type PrefsMessage,
+  type StatusTone,
+  validateDatabaseOrder,
+} from './preferenceMessages'
+import { type CommitResult, getSemanticScholarClient, isSemanticScholarAvailable } from './semanticScholarClient'
 
-/** Statuses shown in the API-key row beyond validation outcomes. */
-type ApiKeyUiStatus = ValidationStatus | 'checking' | 'neutral' | 'unavailable'
+const prefPrefix = `zotero-prefpane-${config.addonRef}`
 
-// Preferences use a separate localization context, so these strings are local.
-function getPrefsString(key: string): string {
-  const strings: Record<string, string> = {
-    'pref-database-valid': 'Valid database configuration',
-    'pref-database-duplicate': 'Duplicate databases found',
-    'pref-database-invalid': 'Invalid database(s): %s',
-    'pref-database-count': 'Please enter 1-3 databases',
-    'pref-database-empty': 'Please enter at least one database',
-    'pref-apikey-valid': '✓ API key is valid',
-    'pref-apikey-invalid': '✗ API key was rejected',
-    'pref-apikey-indeterminate': 'Could not validate right now — try again',
-    'pref-apikey-empty': 'No key set (using shared, unauthenticated access)',
-    'pref-apikey-error': 'Semantic Scholar returned an unexpected error',
-    'pref-apikey-checking': 'Checking…',
-    'pref-apikey-unavailable': 'Semantic Scholar is unavailable in this Zotero runtime',
-  }
-  return strings[key] || key
-}
-
-const apiKeyInputId = `zotero-prefpane-${config.addonRef}-semanticScholarApiKey`
+const apiKeyInputId = `${prefPrefix}-semanticScholarApiKey`
 const apiKeyStatusId = `${apiKeyInputId}-status`
-const apiKeyShowId = `${apiKeyInputId}-show`
+const apiKeyStatusTextId = `${apiKeyStatusId}-text`
+const apiKeyStatusDetailId = `${apiKeyStatusId}-detail`
+const apiKeyStatusCleanedId = `${apiKeyStatusId}-cleaned`
 const apiKeyValidateId = `${apiKeyInputId}-validate`
 const apiKeyGroupId = `${apiKeyInputId}-group`
+const databaseInputId = `${prefPrefix}-databaseOrderExposed`
+const databaseStatusId = `${prefPrefix}-database-status`
+
+const TONE_COLORS: Record<StatusTone, string> = {
+  ok: '#008000',
+  error: '#d70022',
+  warn: '#b8860b',
+  none: '',
+}
 
 // Draft state is shared by the single preferences pane.
 let apiKeyDirty = false
@@ -44,42 +41,83 @@ let apiKeyDraftRevision = 0
 let apiKeyProbeController: AbortController | null = null
 let apiKeyOpSeq = 0
 
+// `Element` rather than `HTMLElement`, because the pane mixes XUL and HTML, and
+// XULButtonElement is not an HTMLElement.
+function byId<T extends Element = Element>(window: Window, id: string): T | null {
+  return window.document?.querySelector<T>(`#${id}`) ?? null
+}
+
 function getApiKeyInput(window: Window): HTMLInputElement | null {
-  return window.document?.querySelector<HTMLInputElement>(`#${apiKeyInputId}`) ?? null
+  return byId<HTMLInputElement>(window, apiKeyInputId)
 }
 
-function statusPresentation(status: ApiKeyUiStatus): { text: string; color: string } {
-  switch (status) {
-    case 'valid':
-      return { text: getPrefsString('pref-apikey-valid'), color: '#008000' }
-    case 'invalid':
-      return { text: getPrefsString('pref-apikey-invalid'), color: '#d70022' }
-    case 'unavailable':
-      return { text: getPrefsString('pref-apikey-unavailable'), color: '#d70022' }
-    case 'client_error':
-      return { text: getPrefsString('pref-apikey-error'), color: '#b8860b' }
-    case 'indeterminate':
-      return { text: getPrefsString('pref-apikey-indeterminate'), color: '#b8860b' }
-    case 'empty':
-      return { text: getPrefsString('pref-apikey-empty'), color: '' }
-    case 'checking':
-      return { text: getPrefsString('pref-apikey-checking'), color: '' }
-    default:
-      return { text: '', color: '' } // neutral / aborted
-  }
+/**
+ * The pane's own Fluent context, resolved on every call. Closing and reopening
+ * preferences creates a new document, so a module-level cache would bind to a
+ * dead one. Throws rather than degrading, since skipping localization silently
+ * would ship blank labels.
+ */
+function localization(window: Window) {
+  const l10n = window.document?.l10n
+  if (!l10n) throw new Error('Citation Tally: the preferences document has no Fluent localization')
+  return l10n
 }
 
-function renderApiKeyStatus(window: Window, status: ApiKeyUiStatus): void {
-  const el = window.document?.querySelector<HTMLElement>(`#${apiKeyStatusId}`)
+/**
+ * Bind or clear a localized element. Arguments reach Fluent as data, so anything
+ * the user typed is rendered with text semantics and can never become markup.
+ *
+ * `DocumentL10n` has `setAttributes` but no `removeAttributes`, so clearing is
+ * done by hand.
+ */
+function applyMessage(window: Window, elementId: string, message: PrefsMessage | null): void {
+  const el = byId(window, elementId)
   if (!el) return
-  const { text, color } = statusPresentation(status)
-  el.textContent = text
-  el.style.color = color
+  if (message === null) {
+    el.removeAttribute('data-l10n-id')
+    el.removeAttribute('data-l10n-args')
+    el.textContent = ''
+    return
+  }
+  localization(window).setAttributes(el, getLocaleID(message.id), 'args' in message ? message.args : undefined)
+}
+
+function setStatusTone(window: Window, containerId: string, tone: StatusTone): void {
+  const container = byId<HTMLElement>(window, containerId)
+  if (container) container.style.color = TONE_COLORS[tone]
+}
+
+/** Extra context shown beside the outcome: what the server said, and what we stripped. */
+interface ApiKeyStatusDetail {
+  detail?: string
+  removed?: string[]
+}
+
+function renderApiKeyStatus(window: Window, status: ApiKeyUiStatus, extra?: ApiKeyStatusDetail): void {
+  const detailEl = byId(window, apiKeyStatusDetailId)
+
+  // Clear every part first, so a stale translation can't sit beside a pending one.
+  applyMessage(window, apiKeyStatusTextId, null)
+  applyMessage(window, apiKeyStatusCleanedId, null)
+  if (detailEl) detailEl.textContent = ''
+
+  applyMessage(window, apiKeyStatusTextId, apiKeyStatusMessage(status))
+  // Semantic Scholar's own wording. Not localizable, and written as text.
+  if (detailEl && extra?.detail !== undefined && extra.detail !== '') detailEl.textContent = `— ${extra.detail}`
+  applyMessage(window, apiKeyStatusCleanedId, cleanedCharactersMessage(extra?.removed ?? []))
+
+  setStatusTone(window, apiKeyStatusId, apiKeyStatusTone(status))
 }
 
 function setValidateEnabled(window: Window, enabled: boolean): void {
-  const btn = window.document?.querySelector<XULButtonElement>(`#${apiKeyValidateId}`)
+  const btn = byId<XULButtonElement>(window, apiKeyValidateId)
   if (btn) btn.disabled = !enabled
+}
+
+/** Validation acts on the field's text, so a field that normalizes to nothing has nothing to check. */
+function syncValidateEnabled(window: Window): void {
+  const input = getApiKeyInput(window)
+  setValidateEnabled(window, input !== null && normalizeApiKey(input.value).key !== '')
 }
 
 /** Store and validate the field unless its value changes while the request is pending. */
@@ -87,13 +125,13 @@ async function commitAndRender(window: Window): Promise<void> {
   const input = getApiKeyInput(window)
   if (!input) return
   if (!isSemanticScholarAvailable()) {
-    // Degraded runtime: no controller, no request; dirty/op/probe state untouched.
+    // Degraded runtime. No controller, no request, and dirty/op/probe state untouched.
     renderApiKeyStatus(window, 'unavailable')
     return
   }
   const revisionAtStart = apiKeyDraftRevision
   const op = ++apiKeyOpSeq
-  // Repeated validation of the same value shares a live request; editing the field aborts it.
+  // Repeated validation of the same value shares one live request. Editing the field aborts it.
   const controller = apiKeyProbeController?.signal.aborted === false ? apiKeyProbeController : new AbortController()
   apiKeyProbeController = controller
 
@@ -105,12 +143,12 @@ async function commitAndRender(window: Window): Promise<void> {
       .commitAndValidate(input.value, controller.signal)
       .finally(() => {
         // Controllers can outlive their requests, so only the newest operation may re-enable the button.
-        if (op === apiKeyOpSeq) setValidateEnabled(window, true)
+        if (op === apiKeyOpSeq) syncValidateEnabled(window)
       })
   } catch (e) {
-    // The pane must never stick at "Checking…"; apply the same stale-op guards as the success path.
+    // The pane must never stick at "Checking…". Same stale-op guards as the success path.
     ztoolkit.log(`API key validation failed unexpectedly: ${String(e)}`)
-    if (op === apiKeyOpSeq) setValidateEnabled(window, true)
+    if (op === apiKeyOpSeq) syncValidateEnabled(window)
     if (op !== apiKeyOpSeq) return
     if (apiKeyDraftRevision !== revisionAtStart) return
     renderApiKeyStatus(window, 'client_error')
@@ -120,24 +158,16 @@ async function commitAndRender(window: Window): Promise<void> {
   // Ignore results superseded by a newer request or edit.
   if (op !== apiKeyOpSeq) return
   if (apiKeyDraftRevision !== revisionAtStart) return
-  if (input.value.trim() !== result.normalizedKey) return
+  if (normalizeApiKey(input.value).key !== result.normalizedKey) return
   if (result.status === 'aborted') return
   apiKeyDirty = false
-  renderApiKeyStatus(window, result.status)
+  // Show the cleaned key, so the field matches what actually gets sent.
+  if (input.value !== result.normalizedKey) input.value = result.normalizedKey
+  renderApiKeyStatus(window, result.status, { detail: result.detail, removed: result.removedCharacters })
 }
 
 export function validateApiKeyUI(window: Window): Promise<void> {
   return commitAndRender(window)
-}
-
-export function toggleApiKeyVisibility(window: Window): void {
-  const input = getApiKeyInput(window)
-  const btn = window.document?.querySelector<XULButtonElement>(`#${apiKeyShowId}`)
-  if (!input || !btn) return
-  const revealed = input.type === 'text'
-  input.type = revealed ? 'password' : 'text'
-  btn.setAttribute('aria-pressed', String(!revealed))
-  btn.setAttribute('label', revealed ? 'Show' : 'Hide')
 }
 
 function bindApiKeyField(window: Window): void {
@@ -145,29 +175,29 @@ function bindApiKeyField(window: Window): void {
   if (!input) return
 
   // Load the stored key before blur handling can persist the field.
-  input.value = (getPref('semanticScholarApiKey') || '').trim()
+  input.value = normalizeApiKey(getPref('semanticScholarApiKey')).key
   apiKeyDirty = false
   apiKeyDraftRevision++
 
   if (!isSemanticScholarAvailable()) {
-    // Degraded runtime: the key can be neither validated nor used — disable
-    // the controls and skip the edit/validate listeners entirely.
+    // Degraded runtime. The key can't be validated or used, so disable the
+    // controls and skip the edit and validate listeners entirely.
     input.disabled = true
     setValidateEnabled(window, false)
-    const showBtn = window.document?.querySelector<XULButtonElement>(`#${apiKeyShowId}`)
-    if (showBtn) showBtn.disabled = true
     renderApiKeyStatus(window, 'unavailable')
     return
   }
 
   renderApiKeyStatus(window, input.value === '' ? 'empty' : 'neutral')
-  setValidateEnabled(window, true)
+  syncValidateEnabled(window)
 
   input.addEventListener('input', () => {
     apiKeyDirty = true
     apiKeyDraftRevision++
     apiKeyProbeController?.abort()
-    renderApiKeyStatus(window, 'neutral')
+    // Emptying the field also disables Validate, so say why instead of leaving the row blank.
+    renderApiKeyStatus(window, normalizeApiKey(input.value).key === '' ? 'empty' : 'neutral')
+    syncValidateEnabled(window)
   })
 
   // Validate after focus leaves the whole group, not while it moves between these controls.
@@ -192,25 +222,32 @@ function bindApiKeyField(window: Window): void {
     () => {
       if (apiKeyDirty) {
         const el = getApiKeyInput(window)
-        if (el) setPref('semanticScholarApiKey', el.value.trim())
+        if (el) setPref('semanticScholarApiKey', normalizeApiKey(el.value).key)
       }
     },
     { once: true },
   )
 }
 
-// export registerStyleSheet(_window: Window) {
-//   const doc = win.document
-//   const styles = ztoolkit.UI.createElement(doc, 'link', {
-//     properties: {
-//       type: 'text/css',
-//       rel: 'stylesheet',
-//       href: `chrome://${addon.data.config.addonRef}/content/zoteroPrefsPane.css`,
-//     },
-//   })
-//   doc.documentElement?.appendChild(styles)
-//   // doc.getElementById('zotero-item-pane-content')?.classList.add('makeItRed')
-// }
+/**
+ * Validate the database-order field and, when asked, save it. Saving is the
+ * caller's job rather than the validator's, so the validator stays pure and
+ * returns a message id rather than rendered text.
+ */
+export function validateDatabaseOrderUI(window: Window, andSave: boolean = true): void {
+  const input = byId<HTMLInputElement>(window, databaseInputId)
+  if (!input) return
+
+  const validation = validateDatabaseOrder(input.value || '')
+  applyMessage(window, databaseStatusId, validation.message)
+  setStatusTone(window, databaseStatusId, validation.valid ? 'ok' : 'error')
+
+  if (!andSave || !validation.valid) return
+  setPref('databaseOrder', validation.databases.join(','))
+  // Someone saving an order that includes Semantic Scholar on a runtime that
+  // can't support it should hear about it right away, not at the next startup.
+  if (validation.databases.includes(SEMANTIC_SCHOLAR_DATABASE)) notifySemanticScholarUnavailable()
+}
 
 export function registerPrefsScripts(_window: Window) {
   // See addon/content/preferences.xhtml onpaneload
@@ -228,133 +265,20 @@ function bindPrefEvents() {
   const window = addon.data.prefs?.window
   if (!window) return
 
-  // Initialize the database order textbox
-  const databaseOrderElement = window.document?.querySelector(
-    `#zotero-prefpane-${config.addonRef}-databaseOrderExposed`,
-  )
-
+  const databaseOrderElement = byId<HTMLInputElement>(window, databaseInputId)
   if (databaseOrderElement) {
-    // Set initial value from preference
-    const currentValue = getPref('databaseOrder') || 'crossref'
-    ;(databaseOrderElement as HTMLInputElement).value = currentValue
-
-    // Add change listener to save preference and refresh column
-    // databaseOrderElement.addEventListener('change', () => {
-    //   const value = databaseOrderElement.value.trim()
-    //   if (value) {
-    //     setPref('databaseOrderExposed', value)
-    //     // Don't automatically save to databaseOrder - only do that on validation
-    //   }
-    // })
+    databaseOrderElement.value = getPref('databaseOrder') || 'crossref'
     databaseOrderElement.addEventListener('focusout', () => {
-      validateDatabaseOrder(window)
+      validateDatabaseOrderUI(window)
     })
   }
 
-  const autoUpdateRadioGroup = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-autoUpdate`)
-  const cutoffDropdown = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-autoUpdateCutoff`)
-
-  function updateCutoffState() {
-    const selectedValue = getPref('autoUpdate') || 'never'
-    if (cutoffDropdown) {
-      ;(cutoffDropdown as any).disabled = selectedValue === 'never'
-    }
-  }
-
-  // Initial state
-  updateCutoffState()
-
-  // Add listener to radiogroup
-  if (autoUpdateRadioGroup) {
-    autoUpdateRadioGroup.addEventListener('command', updateCutoffState)
-  }
-
-  // Add listener for color preference changes to refresh columns immediately
-  const useColorsRadioGroup = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-useColors`)
-  if (useColorsRadioGroup) {
-    useColorsRadioGroup.addEventListener('command', () => {
-      // Refresh the item tree columns to apply new color settings
-      const manager = Zotero.ItemTreeManager as { refreshColumns?: () => void }
-      manager.refreshColumns?.()
-    })
-  }
+  // Refresh the item tree columns so a colour change applies without a restart.
+  const useColorsRadioGroup = window.document?.querySelector(`#${prefPrefix}-useColors`)
+  useColorsRadioGroup?.addEventListener('command', () => {
+    const manager = Zotero.ItemTreeManager as { refreshColumns?: () => void }
+    manager.refreshColumns?.()
+  })
 
   bindApiKeyField(window)
-}
-
-interface Validation {
-  valid: boolean
-  message: string
-  // constructor(valid: boolean, message: string) {
-  //   this.valid = valid
-  //   this.message = message
-  // }
-}
-
-export function validateDatabaseOrderValue(inputValue: string, andSave: boolean = true): Validation {
-  const validDatabases = ['crossref', 'semanticscholar', 'inspire']
-
-  // Parse comma-separated values
-  const databases = inputValue
-    .split(',')
-    .map((db: string) => db.trim())
-    .filter((db: string) => db.length > 0)
-
-  // Check for duplicates
-  const uniqueDatabases = [...new Set(databases)]
-  if (uniqueDatabases.length !== databases.length) {
-    return { valid: false, message: getPrefsString('pref-database-duplicate') }
-  }
-
-  // Check if all databases are valid
-  const invalidDatabases = databases.filter((db: string) => !validDatabases.includes(db))
-  if (invalidDatabases.length > 0) {
-    return { valid: false, message: getPrefsString('pref-database-invalid').replace('%s', invalidDatabases.join(', ')) }
-  }
-
-  // Check length (1-3 databases)
-  if (databases.length === 0 || databases.length > 3) {
-    return { valid: false, message: getPrefsString('pref-database-count') }
-  }
-
-  // Save the validated order to hidden preference
-  if (andSave) {
-    setPref('databaseOrder', databases.join(','))
-  }
-
-  return { valid: true, message: getPrefsString('pref-database-valid') }
-}
-
-export function validationMarkup(validation: Validation, inputElement: Element, statusElement: Element) {
-  if (!inputElement || !statusElement) return
-
-  // Clear status
-  statusElement.innerHTML = ''
-  ;(statusElement as HTMLElement).style.color = ''
-
-  statusElement.innerHTML = validation.message
-  ;(statusElement as HTMLElement).style.color = validation.valid ? '#008000' : '#d70022'
-}
-
-export function validateDatabaseOrder(window: Window, andSave: boolean = true) {
-  const inputElement = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-databaseOrderExposed`)
-  const statusElement = window.document?.querySelector(`#zotero-prefpane-${config.addonRef}-database-status`)
-
-  if (!inputElement || !statusElement) return
-
-  // Clear status
-  statusElement.innerHTML = ''
-  ;(statusElement as HTMLElement).style.color = ''
-
-  const inputValue = ((inputElement as HTMLInputElement).value || '').trim().toLowerCase()
-
-  const validation: Validation = validateDatabaseOrderValue(inputValue, andSave)
-
-  validationMarkup(validation, inputElement, statusElement)
-
-  // Saving an order that includes Semantic Scholar while the runtime cannot
-  // support it warrants an immediate notice (configure-after-startup path).
-  if (andSave && validation.valid && inputValue.includes(SEMANTIC_SCHOLAR_DATABASE)) {
-    notifySemanticScholarUnavailable()
-  }
 }

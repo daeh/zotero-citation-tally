@@ -1,6 +1,6 @@
 /**
  * Tells the user when Semantic Scholar is off because the bootstrap bridge
- * could not resolve the required Web APIs. The bridge report decides
+ * couldn't resolve the Web APIs it needs. The bridge report decides
  * availability; this module is only how that shows up in the UI.
  */
 
@@ -46,9 +46,10 @@ function showNoticeToast(): boolean {
 }
 
 /**
- * Once per bundle, at first main-window load, when Semantic Scholar is
- * configured but unavailable — so a user relying purely on background updates
- * learns why nothing happens. The flag is set only when the toast shows.
+ * Shown once per bundle, at first main-window load, when Semantic Scholar is
+ * configured but unavailable, so that someone who only ever uses background
+ * updates finds out why nothing is happening. The flag is set only if the toast
+ * actually shows.
  */
 export function maybeShowProactiveDegradedNotice(): void {
   try {
@@ -63,8 +64,8 @@ export function maybeShowProactiveDegradedNotice(): void {
 }
 
 /**
- * At user action time (update-selected, retally, saving a database order that
- * includes Semantic Scholar). Notices must never break the action itself.
+ * Shown at user action time: update-selected, retally, or saving a database
+ * order that includes Semantic Scholar. A notice must never break the action.
  */
 export function notifySemanticScholarUnavailable(): void {
   try {

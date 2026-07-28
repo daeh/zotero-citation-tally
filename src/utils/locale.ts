@@ -8,8 +8,12 @@ export { initLocale, getString, getLocaleID }
  * Initialize locale data
  */
 function initLocale() {
+  // Every FTL the plugin ships. `FluentMessageId` is generated as a union over all
+  // of them, so registering only some would let `getString` typecheck against an
+  // id it can't actually resolve. test/locale.test.ts enforces that ids are unique
+  // across the files.
   const l10n = new (typeof Localization === 'undefined' ? ztoolkit.getGlobal('Localization') : Localization)(
-    [`${config.addonRef}-addon.ftl`],
+    [`${config.addonRef}-addon.ftl`, `${config.addonRef}-preferences.ftl`, `${config.addonRef}-mainWindow.ftl`],
     true,
   )
   addon.data.locale = {
@@ -82,6 +86,11 @@ function _getString(
   }
 }
 
-function getLocaleID(id: string) {
+/**
+ * Namespace an id for use where the build cannot rewrite it. The scaffold
+ * prefixes `data-l10n-id` in markup only, so ids constructed in TypeScript must
+ * be prefixed here. Typed on `FluentMessageId` so a typo fails the build.
+ */
+function getLocaleID(id: FluentMessageId) {
   return `${config.addonRef}-${id}`
 }

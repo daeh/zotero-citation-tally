@@ -8,9 +8,9 @@ var chromeHandle
 
 /**
  * Web APIs the bundle needs but Zotero's plugin sandbox omits. We resolve them
- * onto this plugin's own sandbox global, not from a window: Zotero 9 (Gecko 140)
- * only creates the hidden DOM window on macOS, so anything window-based bricks
- * Windows and Linux.
+ * onto this plugin's own sandbox global rather than from a window, because
+ * Zotero 9 (Gecko 140) only creates the hidden DOM window on macOS — anything
+ * window-based would brick Windows and Linux.
  */
 var runtimeCapabilityNames = ['AbortController', 'DOMException']
 
@@ -29,7 +29,7 @@ function isForcedDegraded() {
 }
 
 /**
- * A guarded value read (triggers lazy resolvers, unlike hasOwnProperty).
+ * A guarded value read. Unlike hasOwnProperty, this triggers lazy resolvers.
  * States: 'absent' (undefined), 'function', or 'broken' (non-function or throwing).
  */
 function classifyGlobal(name) {
@@ -44,8 +44,8 @@ function classifyGlobal(name) {
 }
 
 /**
- * Accept constructors only after exercising the behavior the bundle relies on:
- * construction, signal flags, listeners, `AbortSignal.any` composition with
+ * Accept the constructors only after exercising what the bundle actually relies
+ * on: construction, signal flags, listeners, `AbortSignal.any` composition with
  * synchronous propagation, and DOMException naming.
  */
 function verifyCapabilityPair(AbortControllerCtor, DOMExceptionCtor) {
@@ -118,7 +118,7 @@ function makeUnavailableStub(name) {
 }
 
 function makeUnavailableSignalStub() {
-  // Plain data properties holding throwing functions — `typeof` probes must not throw.
+  // Plain data properties holding throwing functions, so that `typeof` probes don't throw.
   var stub = makeUnavailableStub('AbortSignal')
   stub.any = makeUnavailableStub('AbortSignal.any')
   stub.timeout = makeUnavailableStub('AbortSignal.timeout')
@@ -126,11 +126,12 @@ function makeUnavailableSignalStub() {
 }
 
 /**
- * Defines every bridged name on the bundle scope — working value or throwing
- * stub — so bare references never throw ReferenceError, and defines the report
- * `src` reads to decide whether Semantic Scholar is available. It cannot throw:
- * a missing capability disables Semantic Scholar, it must not stop the bundle
- * from loading. The stubs only catch a gate that `src` forgot to check.
+ * Defines every bridged name on the bundle scope, as either a working value or a
+ * throwing stub, so that a bare reference never raises ReferenceError. Also
+ * defines the report `src` reads to decide whether Semantic Scholar is
+ * available. This function must not throw: a missing capability should disable
+ * Semantic Scholar, not stop the bundle from loading. The stubs are there to
+ * catch a gate `src` forgot to check.
  */
 function installRuntimeBridge(context) {
   var resolution = resolveRuntimeCapabilities()
@@ -145,8 +146,8 @@ function installRuntimeBridge(context) {
       return Components.utils.now()
     },
   }
-  // Realm-independent microtask; a throwing callback surfaces as an unhandled
-  // rejection instead of a window error event.
+  // Realm-independent microtask. A throwing callback shows up as an unhandled
+  // rejection rather than a window error event.
   context.queueMicrotask = function (callback) {
     Promise.resolve().then(callback)
   }

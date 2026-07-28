@@ -3,30 +3,56 @@
  *
  * Request spacing is global. HTTP 429 backoff is tracked per quota identity;
  * server, timeout, and network backoff is shared.
+ *
+ * Authentication is handled conservatively. Semantic Scholar fronts the Graph API
+ * with AWS API Gateway, which answers an unrecognised `x-api-key` with 403 and
+ * throttling with 429, but an edge or WAF rejection can come back as 403 too. One
+ * 403 therefore proves nothing, so a key is paused only after two *adjacent* 403s
+ * for that key, and 401 never pauses it at all.
  */
 
 import { getErrorName } from '../utils/errors.ts'
 import { toS2PaperRefs } from '../utils/s2Identifiers.ts'
 
 import type { ItemIdentifier, LookupResult } from './citationTypes.ts'
-import type { KeyRef } from './semanticScholarKeyState.ts'
+import type { AttemptAuthority, KeyRef, RejectionAttempt, RejectionDisposition } from './semanticScholarKeyState.ts'
 
-const S2_PAPER_BASE = 'https://api.semanticscholar.org/graph/v1/paper'
+export const S2_PAPER_BASE = 'https://api.semanticscholar.org/graph/v1/paper'
 const S2_FIELDS = 'fields=citationCount'
 
+/** One confirming request after a first 403, on a budget of its own. */
+const AUTH_CORROBORATION_RETRIES = 1
+const AUTH_DETAIL_MAX_BYTES = 4096
+const AUTH_DETAIL_MAX_CHARS = 120
+
 export type AttemptMode =
-  { readonly mode: 'keyed'; readonly key: string; readonly generation: number } | { readonly mode: 'anonymous' }
+  | {
+      readonly mode: 'keyed'
+      readonly key: string
+      readonly generation: number
+      readonly authority: AttemptAuthority
+    }
+  | { readonly mode: 'anonymous' }
 
 export type S2Result =
   | { readonly kind: 'response'; readonly status: number; readonly headers: Headers; readonly bodyText: string }
+  /** Two adjacent 403s: the key is now paused. */
+  | { readonly kind: 'auth_rejected'; readonly status: 403; readonly detail?: string }
+  /** A 401, or a 403 we couldn't corroborate. Says nothing about the key. */
+  | { readonly kind: 'auth_unconfirmed'; readonly status: number; readonly detail?: string }
   | { readonly kind: 'ineligible'; readonly reason: 'stale_key' | 'key_disabled' }
   | { readonly kind: 'transient'; readonly cause: string }
   | { readonly kind: 'aborted' }
 
 /** Access to key state owned by the Zotero adapter. */
 export interface KeyStateAccess {
-  isEligible: (ref: KeyRef) => boolean
-  reject: (ref: KeyRef) => void
+  isEligible: (ref: KeyRef, authority: AttemptAuthority) => boolean
+  /** Reports whether the evidence stood. Only `'stale'` means it was declined. */
+  reject: (ref: KeyRef, attempt: RejectionAttempt) => RejectionDisposition
+  /** A routed, authenticated response proves the key is currently accepted. */
+  recordAuthAccepted: (ref: KeyRef) => void
+  authEpoch: () => number
+  releaseHalfOpen: (ref: KeyRef, leaseId: number) => void
   currentContext: () => AttemptMode
 }
 
@@ -53,6 +79,10 @@ export const DEFAULT_S2_CONFIG: S2CoreConfig = {
 
 export interface S2CoreDeps {
   fetch: (url: string, init: RequestInit) => Promise<Response>
+  /** Base URL for `/{paper_id}` lookups; injected so tests can target a local fixture. */
+  paperBaseUrl: string
+  /** Sent on every request so Semantic Scholar can identify the client. */
+  userAgent: string
   /** Monotonic milliseconds. */
   monotonicNow: () => number
   /** Wall-clock epoch milliseconds. */
@@ -100,6 +130,33 @@ function parseCitationCount(bodyText: string): number | null {
   }
 }
 
+/**
+ * API Gateway rejects an unknown key before routing, so any routed response proves
+ * the key was accepted. 429/408/5xx are excluded because they can come from the
+ * edge, ahead of key validation, and would clear a pause they never tested.
+ */
+function provesAuthAccepted(status: number): boolean {
+  return (status >= 200 && status < 300) || status === 400 || status === 404 || status === 422
+}
+
+/** Reduce a response body to a short, log-safe phrase. Never returns key material. */
+function summarizeAuthDetail(body: string, key: string): string | undefined {
+  let text = body
+  try {
+    const parsed = JSON.parse(body) as { message?: unknown }
+    if (typeof parsed?.message === 'string') text = parsed.message
+  } catch {
+    // Not JSON; the raw text is the best detail available.
+  }
+  if (key !== '') text = text.split(key).join('[redacted]')
+  // Keep control and bidi characters out of log lines and the preferences pane.
+  const cleaned = text
+    .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned === '' ? undefined : cleaned.slice(0, AUTH_DETAIL_MAX_CHARS)
+}
+
 export class SemanticScholarClientCore {
   private readonly deps: S2CoreDeps
   private readonly cfg: S2CoreConfig
@@ -130,6 +187,11 @@ export class SemanticScholarClientCore {
     return this.deps.shutdownSignal.aborted || callerSignal?.aborted === true
   }
 
+  private keyedEligible(ctx: AttemptMode): boolean {
+    if (ctx.mode !== 'keyed') return true
+    return this.deps.getKeyState.isEligible({ key: ctx.key, generation: ctx.generation }, ctx.authority)
+  }
+
   /** Wait for spacing and backoff, then synchronously claim the next request slot. */
   private async acquireSlot(
     ctx: AttemptMode,
@@ -139,9 +201,7 @@ export class SemanticScholarClientCore {
   ): Promise<{ ok: true } | { ok: false; result: S2Result }> {
     for (;;) {
       if (this.isCancelled(callerSignal)) return { ok: false, result: { kind: 'aborted' } }
-      if (ctx.mode === 'keyed' && !this.deps.getKeyState.isEligible({ key: ctx.key, generation: ctx.generation })) {
-        return { ok: false, result: { kind: 'ineligible', reason: 'key_disabled' } }
-      }
+      if (!this.keyedEligible(ctx)) return { ok: false, result: { kind: 'ineligible', reason: 'key_disabled' } }
       const now = this.deps.monotonicNow()
       if (this.circuitUntil(identity) > now) return { ok: false, result: { kind: 'transient', cause: 'circuit' } }
 
@@ -162,9 +222,7 @@ export class SemanticScholarClientCore {
       }
 
       if (this.isCancelled(callerSignal)) return { ok: false, result: { kind: 'aborted' } }
-      if (ctx.mode === 'keyed' && !this.deps.getKeyState.isEligible({ key: ctx.key, generation: ctx.generation })) {
-        return { ok: false, result: { kind: 'ineligible', reason: 'key_disabled' } }
-      }
+      if (!this.keyedEligible(ctx)) return { ok: false, result: { kind: 'ineligible', reason: 'key_disabled' } }
       const now2 = this.deps.monotonicNow()
       if (this.circuitUntil(identity) > now2) return { ok: false, result: { kind: 'transient', cause: 'circuit' } }
       if (this.lastAttemptAt !== null && now2 < this.lastAttemptAt + spacing) continue // lost the race; recompute
@@ -205,8 +263,62 @@ export class SemanticScholarClientCore {
     return target.circuitUntil > now
   }
 
-  /** Send one request, retrying transient failures up to `maxRetries`. */
+  /**
+   * Release an unread body without allocating it. Draining it by reading would
+   * defeat the size guard, since the bodies we skip are the unbounded ones.
+   */
+  private discardBody(res: Response): void {
+    try {
+      res.body?.cancel().catch(() => undefined)
+    } catch {
+      // No stream in this realm, or the body is already disturbed.
+    }
+  }
+
+  /**
+   * Read a small, uncompressed error body. Fetch decompresses transparently, so
+   * `Content-Length` bounds nothing once a body is encoded. Demand identity
+   * encoding as well; anything else is reported as a status and nothing more.
+   */
+  private async readAuthDetail(res: Response, key: string): Promise<string | undefined> {
+    const encoding = res.headers.get('content-encoding')
+    if (encoding !== null && encoding.trim().toLowerCase() !== 'identity') {
+      this.discardBody(res)
+      return undefined
+    }
+    const declared = res.headers.get('content-length')
+    if (declared === null || !/^\d+$/.test(declared) || Number(declared) > AUTH_DETAIL_MAX_BYTES) {
+      this.discardBody(res)
+      return undefined
+    }
+    try {
+      return summarizeAuthDetail(await res.text(), key)
+    } catch {
+      return undefined // the status is already known; a failed body read must not discard it
+    }
+  }
+
+  /**
+   * Send one request, retrying transient failures up to `maxRetries`. The
+   * half-open lease is released in the `finally` here, so no failure path can
+   * strand it.
+   */
   async requestS2(
+    paperId: string,
+    ctx: AttemptMode,
+    callerSignal?: AbortSignal,
+    opts?: { maxRetries?: number },
+  ): Promise<S2Result> {
+    try {
+      return await this.dispatch(paperId, ctx, callerSignal, opts)
+    } finally {
+      if (ctx.mode === 'keyed' && ctx.authority.kind === 'half_open') {
+        this.deps.getKeyState.releaseHalfOpen({ key: ctx.key, generation: ctx.generation }, ctx.authority.leaseId)
+      }
+    }
+  }
+
+  private async dispatch(
     paperId: string,
     ctx: AttemptMode,
     callerSignal?: AbortSignal,
@@ -215,61 +327,101 @@ export class SemanticScholarClientCore {
     const maxRetries = opts?.maxRetries ?? this.cfg.maxRetries
     const identity = this.identityFor(ctx)
     const waitSignal = this.composeWaitSignal(callerSignal)
-    const url = `${S2_PAPER_BASE}/${paperId}?${S2_FIELDS}`
+    const url = `${this.deps.paperBaseUrl}/${paperId}?${S2_FIELDS}`
 
-    for (let attempt = 0; ; attempt++) {
+    let sawAuthFailure = false // a 403 immediately before this attempt, in this operation
+    let authEpochAtFirstFailure = 0
+    let authRetriesUsed = 0
+    // Counted separately from the auth-confirmation request, so that a 403 can't
+    // spend a transient retry and a 429 can't spend the confirmation.
+    let transientRetries = 0
+
+    for (;;) {
       const slot = await this.acquireSlot(ctx, identity, waitSignal, callerSignal)
       if (!slot.ok) return slot.result
 
       const timeoutSignal = this.deps.createTimeoutSignal(this.cfg.timeoutMs)
       const fetchSignal = this.composeFetchSignal(callerSignal, timeoutSignal)
-      const init: RequestInit = {
-        redirect: 'error',
-        cache: 'no-store',
-        signal: fetchSignal,
-        ...(ctx.mode === 'keyed' ? { headers: { 'x-api-key': ctx.key } } : {}),
-      }
+      const headers: Record<string, string> = { 'User-Agent': this.deps.userAgent }
+      if (ctx.mode === 'keyed') headers['x-api-key'] = ctx.key
+      const init: RequestInit = { redirect: 'error', cache: 'no-store', signal: fetchSignal, headers }
 
       try {
         const res = await this.deps.fetch(url, init)
         const status = res.status
+
+        if (ctx.mode === 'keyed' && (status === 401 || status === 403)) {
+          // Sample the epoch when the headers arrive. An acceptance racing the body
+          // read would otherwise look as though it preceded this failure, making
+          // the two 403s look adjacent when they aren't.
+          const epochAtFailure = this.deps.getKeyState.authEpoch()
+          const detail = await this.readAuthDetail(res, ctx.key)
+          if (this.isCancelled(callerSignal)) return { kind: 'aborted' }
+          this.deps.log(`S2 lookup status=${status} api_key_sent=true reason=${detail ?? 'n/a'}`)
+
+          // 403 is Semantic Scholar's unrecognised-key signal. 401 never pauses a key.
+          if (status !== 403) return { kind: 'auth_unconfirmed', status, detail }
+
+          if (!sawAuthFailure) {
+            if (authRetriesUsed >= AUTH_CORROBORATION_RETRIES) {
+              return { kind: 'auth_unconfirmed', status, detail } // nothing left to confirm with
+            }
+            sawAuthFailure = true
+            authEpochAtFirstFailure = epochAtFailure
+            authRetriesUsed += 1
+            continue // one confirming request, on its own budget
+          }
+
+          const disposition = this.deps.getKeyState.reject(
+            { key: ctx.key, generation: ctx.generation },
+            { expectedAuthEpoch: authEpochAtFirstFailure, authority: ctx.authority },
+          )
+          // Only stale evidence is inconclusive. Reporting it as a rejection would
+          // fail a valid key. A pause already in force is still a real rejection.
+          return disposition === 'stale'
+            ? { kind: 'auth_unconfirmed', status, detail }
+            : { kind: 'auth_rejected', status: 403, detail }
+        }
+
         this.deps.log(`S2 lookup status=${status} api_key_sent=${ctx.mode === 'keyed'}`)
+        sawAuthFailure = false // any non-403 outcome breaks adjacency within this operation
 
         // Status and Retry-After remain usable even if reading the body fails.
-        if (ctx.mode === 'keyed' && (status === 401 || status === 403)) {
-          this.deps.getKeyState.reject({ key: ctx.key, generation: ctx.generation })
-          void res.text().catch(() => undefined) // drain unused body
-          return { kind: 'response', status, headers: res.headers, bodyText: '' }
-        }
         if (status === 429 || status === 408 || status >= 500) {
           const retryAfter = res.headers.get('retry-after')
           const retryAfterMs =
             retryAfter === null ? null : this.deps.parseRetryAfterMs(retryAfter, this.deps.nowEpochMs())
-          void res.text().catch(() => undefined) // drain unused body
+          this.discardBody(res)
           const bucket = status === 429 ? this.quotaFor(identity) : this.service
           this.recordTransient(bucket, retryAfterMs, this.deps.monotonicNow())
-          if (this.isCircuitOpen(bucket, this.deps.monotonicNow()) || attempt >= maxRetries) {
+          if (this.isCircuitOpen(bucket, this.deps.monotonicNow()) || transientRetries >= maxRetries) {
             return { kind: 'transient', cause: `http_${status}` }
           }
+          transientRetries += 1
           continue // re-enqueue against the updated deadline
         }
 
         this.recordHealthy(identity)
+        if (ctx.mode === 'keyed' && provesAuthAccepted(status)) {
+          this.deps.getKeyState.recordAuthAccepted({ key: ctx.key, generation: ctx.generation })
+        }
         if (status >= 200 && status < 300) {
           const bodyText = await res.text() // may reject (abort/network) — caught below
           return { kind: 'response', status, headers: res.headers, bodyText }
         }
-        void res.text().catch(() => undefined)
+        this.discardBody(res)
         return { kind: 'response', status, headers: res.headers, bodyText: '' }
       } catch (err) {
         // Caller and shutdown aborts are cancellations; other fetch failures are transient.
         if (this.isCancelled(callerSignal)) return { kind: 'aborted' }
         const cause = classifyRequestFailure(err)
         if (cause === null) throw err
+        sawAuthFailure = false
         this.recordTransient(this.service, null, this.deps.monotonicNow())
-        if (this.isCircuitOpen(this.service, this.deps.monotonicNow()) || attempt >= maxRetries) {
+        if (this.isCircuitOpen(this.service, this.deps.monotonicNow()) || transientRetries >= maxRetries) {
           return { kind: 'transient', cause }
         }
+        transientRetries += 1
         continue
       }
     }
@@ -315,7 +467,13 @@ export class SemanticScholarClientCore {
           const status = result.cause === 'http_429' ? 'rate_limited' : 'transient_error'
           return { count: -1, status, message: result.cause }
         }
-        if (result.kind === 'ineligible') {
+        if (result.kind === 'auth_unconfirmed') {
+          // Uncorroborated, so the key is untouched and this says nothing about the
+          // item. It must not be api_error, which auto-update stores as an ignore.
+          return { count: -1, status: 'transient_error', message: `auth_unconfirmed_${result.status}` }
+        }
+        if (result.kind === 'auth_rejected' || result.kind === 'ineligible') {
+          // The key is paused now; retry this identifier with the refreshed context.
           if (++restarts > this.cfg.maxContextRestarts) {
             sawApiError = true
             advance = true
@@ -326,18 +484,9 @@ export class SemanticScholarClientCore {
         }
 
         const status = result.status
-        if (ctx.mode === 'keyed' && (status === 401 || status === 403)) {
-          // Retry with the current key state after a 401 or 403.
-          if (++restarts > this.cfg.maxContextRestarts) {
-            sawApiError = true
-            advance = true
-            break
-          }
-          ctx = this.deps.getKeyState.currentContext()
-          continue
-        }
-        if (ctx.mode === 'anonymous' && (status === 401 || status === 403)) {
-          return { count: -1, status: 'api_error', message: `Unexpected anonymous ${status}` }
+        if (status === 401 || status === 403) {
+          // Anonymous only. A service condition, not a property of this item.
+          return { count: -1, status: 'transient_error', message: `Unexpected anonymous ${status}` }
         }
         if (status === 404) {
           sawNotFound = true
@@ -369,7 +518,8 @@ export class SemanticScholarClientCore {
 
 function classifyRequestFailure(error: unknown): 'timeout' | 'network' | null {
   const name = getErrorName(error)
-  // Composite signals may surface a timeout as AbortError; caller and shutdown aborts were handled above.
+  // Composite signals can surface a timeout as AbortError. Caller and shutdown
+  // aborts were already handled above.
   if (name === 'TimeoutError' || name === 'AbortError') return 'timeout'
   if (name === 'TypeError') return 'network'
   return null

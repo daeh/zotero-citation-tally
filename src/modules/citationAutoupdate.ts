@@ -115,10 +115,16 @@ function getOperationName(key: string): string {
   return fluentId ? getString(fluentId) : key
 }
 
+/** What kicked off a library scan. Startup runs are gated on the preference; manual runs are not. */
+type UpdateTrigger = 'startup' | 'manual'
+
 // Automatic update state
 let autoUpdateInProgress = false
+let autoUpdateStarting = false
 let autoUpdateQueue: Zotero.Item[] = []
 let autoUpdateIndex = 0
+let autoUpdateSuccessCount = 0
+let autoUpdateTrigger: UpdateTrigger = 'startup'
 let autoUpdateProgressWindow: any = null
 let autoUpdateRetryCount = 0
 let autoUpdateTimer: ReturnType<typeof setTimeout> | null = null
@@ -160,8 +166,8 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
     databaseOrder.split(',').map((db: string) => db.trim()),
     isSemanticScholarAvailable(),
   )
-  // With no supported database nothing can be outdated. Checked ahead of the
-  // empty-`extra` return below, or such items would still queue.
+  // With no supported database, nothing can be outdated. This has to come before
+  // the empty-`extra` return below, or such items would still get queued.
   if (databases.length === 0) {
     return [false, 'no_effective_databases']
   }
@@ -171,7 +177,8 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
     return [true, 'no_extra_field']
   }
 
-  // A stamp on the cutoff date remains current; Temporal constrains month-end arithmetic.
+  // A stamp on the cutoff date still counts as current. Temporal handles the
+  // month-end arithmetic.
   const cutoffDate = Temporal.Now.plainDateISO().subtract({
     months: parseCutoffMonths(getPref('autoUpdateCutoff') || '6'),
   })
@@ -368,11 +375,6 @@ async function getItemsNeedingUpdate(): Promise<Zotero.Item[]> {
 }
 
 function checkIfRunnable(): boolean {
-  // if (autoUpdateInProgress) {
-  //   ztoolkit.log('Auto update: Already in progress, not starting another instance')
-  //   return false
-  // }
-
   const window = Zotero.getMainWindow()
 
   if (!window) {
@@ -389,23 +391,27 @@ function checkIfRunnable(): boolean {
 }
 
 /**
- * Start automatic update process on startup if enabled
+ * Scan My Library and update outdated citations. Startup runs are gated on the
+ * `autoUpdate` preference; the Tools menu passes `manual` and always runs.
+ *
+ * Queue state is committed only after every early return, and a start-phase flag
+ * covers the awaited library scan, so two invocations cannot both install a queue
+ * and a failed start cannot leave `autoUpdateInProgress` latched.
  */
-async function startAutomaticUpdate(silent: boolean = false) {
-  const autoUpdateMode = getPref('autoUpdate') || 'never'
-
-  if (autoUpdateMode !== 'startup') {
+async function startAutomaticUpdate(silent: boolean = false, trigger: UpdateTrigger = 'startup') {
+  if (trigger === 'startup' && (getPref('autoUpdate') || 'never') !== 'startup') {
     return
   }
 
-  if (autoUpdateInProgress) {
+  if (autoUpdateStarting || autoUpdateInProgress) {
     return
   }
 
+  autoUpdateStarting = true
   try {
     const itemsToUpdate = await getItemsNeedingUpdate()
 
-    // The library scan can span a disable; nothing may be scheduled after it.
+    // The library scan can straddle a disable, so schedule nothing after it.
     if (!addon.data.alive) return
 
     if (itemsToUpdate.length === 0) {
@@ -417,15 +423,17 @@ async function startAutomaticUpdate(silent: boolean = false) {
 
     // Item queue details available in detailed debug reasons output above
 
-    autoUpdateInProgress = true
-    autoUpdateQueue = itemsToUpdate
-    autoUpdateIndex = 0
-    autoUpdateRetryCount = 0
-
     if (!checkIfRunnable()) {
       ztoolkit.log('Auto update: Not runnable, stopping')
       return
     }
+
+    autoUpdateInProgress = true
+    autoUpdateTrigger = trigger
+    autoUpdateQueue = itemsToUpdate
+    autoUpdateIndex = 0
+    autoUpdateSuccessCount = 0
+    autoUpdateRetryCount = 0
 
     // Start processing with a delay to allow Zotero to fully initialize
     autoUpdateTimer = setTimeout(() => {
@@ -437,7 +445,9 @@ async function startAutomaticUpdate(silent: boolean = false) {
       if (!silent) {
         // Show progress window
         autoUpdateProgressWindow = new ztoolkit.ProgressWindow(
-          getString('auto-update-title', { args: { addonName: addon.data.config.addonName } }),
+          trigger === 'manual'
+            ? addon.data.config.addonName
+            : getString('auto-update-title', { args: { addonName: addon.data.config.addonName } }),
           {
             closeOnClick: true,
             closeTime: -1,
@@ -457,6 +467,8 @@ async function startAutomaticUpdate(silent: boolean = false) {
     }, 3000)
   } catch (error) {
     ztoolkit.log('Auto update: Error getting items to update:', error)
+  } finally {
+    autoUpdateStarting = false
   }
 }
 
@@ -517,7 +529,7 @@ async function processAutoUpdateQueue(silent: boolean = false) {
       return
     }
 
-    await updateItem(item, undefined, true)
+    const updated = await updateItem(item, undefined, true)
 
     // A shutdown during the item's fetches must not advance or reschedule the queue.
     if (!addon.data.alive) {
@@ -526,6 +538,7 @@ async function processAutoUpdateQueue(silent: boolean = false) {
     }
 
     autoUpdateIndex++
+    if (updated) autoUpdateSuccessCount++
 
     // Database clients apply their own request pacing.
     scheduleNext(silent, 100)
@@ -586,22 +599,26 @@ function finishAutomaticUpdate(errorMessage?: string, silent: boolean = false) {
     autoUpdateProgressWindow = null
   }
 
-  const updatedCount = autoUpdateIndex
+  const updatedCount = autoUpdateSuccessCount
   const totalCount = autoUpdateQueue.length
+  const manual = autoUpdateTrigger === 'manual'
 
   // Show completion message
   if (!silent) {
-    const completionWindow = new ztoolkit.ProgressWindow('Citation Tally - Auto Update')
+    const completionWindow = new ztoolkit.ProgressWindow(addon.data.config.addonName)
 
     if (errorMessage) {
       completionWindow.createLine({
-        text: getString('auto-update-stopped', { args: { error: errorMessage } }),
+        // `auto-update-stopped` is startup wording; a manual run reports the error plainly.
+        text: manual ? errorMessage : getString('auto-update-stopped', { args: { error: errorMessage } }),
         type: 'fail',
         progress: 100,
       })
     } else {
       completionWindow.createLine({
-        text: getString('auto-update-completed', { args: { updated: updatedCount, total: totalCount } }),
+        text: manual
+          ? getString('progress-items-updated', { args: { count: updatedCount } })
+          : getString('auto-update-completed', { args: { updated: updatedCount, total: totalCount } }),
         type: 'success',
         progress: 100,
       })
@@ -617,6 +634,7 @@ function finishAutomaticUpdate(errorMessage?: string, silent: boolean = false) {
   }
   autoUpdateQueue = []
   autoUpdateIndex = 0
+  autoUpdateSuccessCount = 0
   autoUpdateRetryCount = 0
 
   ztoolkit.log(`Auto update completed: ${updatedCount}/${totalCount} items updated`)

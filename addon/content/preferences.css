@@ -100,6 +100,31 @@ div.citationtally-pref-options-div {
   /*max-width: fit-content;*/
 }
 
+/* Gecko puts its reveal button (::-moz-reveal) inside password fields, and a key
+   longer than the field paints right under it. Padding the text away would push
+   the button inward and leave a gap at the edge, so instead give the button the
+   field's own background and let it cover the overflow. */
+input.citationtally-pref-apikey-input {
+  padding: 4px;
+}
+
+input.citationtally-pref-apikey-input::-moz-reveal {
+  background-color: inherit;
+}
+
+/* Separates the label from the monospace token list beside it. */
+span.citationtally-pref-options-label {
+  margin-inline-end: 0.35em;
+}
+
+/* The status row is three separate spans: a localized outcome, the server's own
+   message, and a localized note. Keeping them apart avoids concatenating them.
+   The gap has to be a margin rather than whitespace between the elements, since
+   Fluent's text substitution wouldn't preserve whitespace. */
+span.citationtally-status-part {
+  margin-inline-start: 0.35em;
+}
+
 span.citationtally-pref-options-code-span {
   font-family: monospace;
   font-weight: 600;

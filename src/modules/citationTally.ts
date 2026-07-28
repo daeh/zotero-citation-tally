@@ -285,7 +285,7 @@ function scheduleMonthlyCleanup() {
   }, 5000) // Delay 5 seconds after startup
 }
 
-/** Untracked, these timers would survive disable and mutate the ignore cache. */
+/** Without this, the timers survive a disable and go on mutating the ignore cache. */
 function cancelMonthlyCleanup() {
   if (cleanupTimer) {
     clearInterval(cleanupTimer)
@@ -934,8 +934,8 @@ class DBInterface {
    * @returns LookupResult with count and status
    */
   static async getSemanticScholarCountEnhanced(item: Zotero.Item): Promise<LookupResult> {
-    // The scheduling filters should already keep this off the degraded path;
-    // if one is missed, return a result that never persists an item ignore.
+    // The scheduling filters should already keep this off the degraded path. If
+    // one is missed, return a result that never persists an item ignore.
     if (!isSemanticScholarAvailable()) return semanticScholarUnavailableResult()
     // The dedicated client handles authentication, pacing, retries, and identifier fallback.
     const identifiers = Helpers.getAllItemIdentifiers(item)
@@ -1022,8 +1022,8 @@ function updateItems(items: Zotero.Item[], operations?: string[] | string, silen
 
   const databases = Helpers.getDatabaseArray(operations)
   if (databases.length === 0) {
-    // Nothing configured, or nothing this runtime supports — bail before the
-    // progress window opens. The user entry points show the degraded notice.
+    // Nothing configured, or nothing this runtime supports. Bail out before the
+    // progress window opens; the user entry points show the degraded notice.
     ztoolkit.log('Citation debug - No effective databases; skipping update queue')
     return
   }
@@ -1062,7 +1062,7 @@ async function runUpdateQueue(operations?: string[] | string, silent: boolean = 
 
     try {
       // Manual updates bypass the ignored-item cache.
-      await updateItem(itemsToUpdate[currentIndex], operations, false)
+      if (await updateItem(itemsToUpdate[currentIndex], operations, false)) updatedCount++
     } catch (e) {
       if (isErrorNamed(e, 'AbortError')) break
       ztoolkit.log('Error updating citation count for item', e)
@@ -1086,7 +1086,11 @@ async function runUpdateQueue(operations?: string[] | string, silent: boolean = 
 }
 
 /**
- * Update a single item's citation count
+ * Update a single item's citation count.
+ *
+ * Returns true only once a count has been written to the item, so each queue can
+ * keep its own success tally rather than sharing one across concurrent runs.
+ *
  * @param item Zotero item to update
  * @param operation Citation source to use
  * @param isAutoUpdate Whether this is called from auto-update (to respect unlisted cache)
@@ -1095,14 +1099,14 @@ async function updateItem(
   item: Zotero.Item,
   operations?: string[] | string,
   isAutoUpdate: boolean = false,
-): Promise<void> {
+): Promise<boolean> {
   try {
     ztoolkit.log('Citation debug - Updating item:', item.id, 'title:', item.getField('title'))
 
     const databases = Helpers.getDatabaseArray(operations)
     if (databases.length === 0) {
       ztoolkit.log('Citation debug - No databases configured, skipping item:', item.id)
-      return
+      return false
     }
 
     const data: CountArray = []
@@ -1128,7 +1132,7 @@ async function updateItem(
       }
 
       // Once the plugin is shut down, don't write to the ignore cache or the item.
-      if (!addon.data.alive) return
+      if (!addon.data.alive) return false
 
       if (result.status === 'success' && result.count >= 0) {
         IgnoredItemsManager.clearIgnoredItem(item.id, operation)
@@ -1146,15 +1150,16 @@ async function updateItem(
       }
     }
 
-    if (!addon.data.alive) return
+    if (!addon.data.alive) return false
     if (data.length > 0) {
       await Core.setCitationCount(item, data)
-      updatedCount++
+      return true
     }
   } catch (e) {
     if (isErrorNamed(e, 'AbortError')) throw e
     ztoolkit.log('Error updating citation count for item', e)
   }
+  return false
 }
 
 class BasicRegistrar {

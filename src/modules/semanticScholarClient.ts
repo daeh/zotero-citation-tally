@@ -3,26 +3,30 @@
  * preferences, validation, and rejection warnings without logging key values.
  */
 
-import { config } from '../../package.json'
+import { config, version } from '../../package.json'
+import { normalizeApiKey } from '../utils/apiKey'
 import { getString } from '../utils/locale'
 import { getPref, setPref } from '../utils/prefs'
 import { parseRetryAfterMs } from '../utils/temporalParse'
 
-import { SemanticScholarClientCore } from './semanticScholarClient.core'
+import { S2_PAPER_BASE, SemanticScholarClientCore } from './semanticScholarClient.core'
 import {
   applyRejection,
   changeKey,
   initialKeyState,
   isKeyedAttemptEligible,
-  isKeyUsable,
   isRejectionCurrent,
   markPendingWarning,
   markWarned,
+  recordAuthAccepted,
+  releaseHalfOpen,
+  selectAttemptAuthority,
 } from './semanticScholarKeyState'
 
-import type { ItemIdentifier, LookupResult } from './citationTypes'
+import type { ItemIdentifier, LookupResult, ValidationStatus } from './citationTypes'
 import type { AttemptMode, KeyStateAccess, S2CoreDeps } from './semanticScholarClient.core'
-import type { KeyRef, KeyState } from './semanticScholarKeyState'
+import type { KeyRef, KeyState, RejectionAttempt, RejectionDisposition } from './semanticScholarKeyState'
+import type { NormalizedApiKey } from '../utils/apiKey'
 
 const PREF_KEY = 'semanticScholarApiKey' as const
 const RATE_LIMITS_PREF = 'rateLimits' as const
@@ -30,13 +34,42 @@ const KEYED_SPACING_MS = 1000
 const ANON_FALLBACK_SPACING_MS = 3000
 /** Semantic Scholar's example paper, used for API-key validation. */
 const PROBE_PAPER_ID = '649def34f8be52c8b66281af98ae884c09aef38b'
+/**
+ * Transient retries for a validation probe. Auth corroboration has its own budget
+ * in the core, so this just absorbs a 429/5xx blip during an explicit check.
+ */
+const PROBE_MAX_RETRIES = 1
+/** Identifies the client to Semantic Scholar. `name/version` must be one token. */
+const USER_AGENT = `Citation-Tally/${version} (+https://github.com/daeh/zotero-citation-tally)`
 
-export type ValidationStatus = 'valid' | 'invalid' | 'indeterminate' | 'empty' | 'client_error' | 'aborted'
+export type { ValidationStatus }
 
-export interface CommitResult {
+interface ProbeOutcome {
   status: ValidationStatus
+  /** Short, redacted phrase from Semantic Scholar, when it supplied one. */
+  detail?: string
+}
+
+export interface CommitResult extends ProbeOutcome {
   normalizedKey: string
   generation: number
+  /** Labels of characters normalization removed from the input, if any. */
+  removedCharacters?: string[]
+}
+
+/**
+ * The key we would actually send. A key still holding unsendable characters would
+ * throw at `Headers` construction on every request, so it counts as unset and
+ * lookups carry on anonymously, with the preferences pane naming the characters.
+ * The stored-key read and the commit path both go through this, so they can't
+ * disagree and advance the key generation for no reason.
+ */
+function effectiveKey(normalized: NormalizedApiKey): string {
+  return normalized.unusable.length > 0 ? '' : normalized.key
+}
+
+function monotonicNow(): number {
+  return performance ? performance.now() : Temporal.Now.instant().epochMilliseconds
 }
 
 function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
@@ -67,21 +100,28 @@ class SemanticScholarClient {
   private readonly shutdownController = new AbortController()
   private warningToast: { close: () => void } | null = null
   private observerId: symbol | null = null
-  private readonly inFlightProbes = new Map<string, Promise<ValidationStatus>>()
+  private readonly inFlightProbes = new Map<string, Promise<ProbeOutcome>>()
   private readonly core: SemanticScholarClientCore
 
   constructor() {
     const keyStateAccess: KeyStateAccess = {
-      isEligible: (ref: KeyRef) => isKeyedAttemptEligible(this.keyState, ref),
-      reject: (ref: KeyRef) => this.onKeyRejected(ref),
+      isEligible: (ref, authority) => isKeyedAttemptEligible(this.keyState, ref, monotonicNow(), authority),
+      reject: (ref, attempt) => this.onKeyRejected(ref, attempt),
+      recordAuthAccepted: (ref) => this.onAuthAccepted(ref),
+      authEpoch: () => this.keyState.authEpoch,
+      releaseHalfOpen: (ref, leaseId) => {
+        this.keyState = releaseHalfOpen(this.keyState, ref, leaseId)
+      },
       currentContext: () => this.currentContext(),
     }
     const deps: S2CoreDeps = {
       fetch: (url, init) => fetch(url, init),
-      monotonicNow: () => (performance ? performance.now() : Temporal.Now.instant().epochMilliseconds),
+      paperBaseUrl: S2_PAPER_BASE,
+      userAgent: USER_AGENT,
+      monotonicNow,
       nowEpochMs: () => Temporal.Now.instant().epochMilliseconds,
-      // AbortSignal.timeout is Exposed=(Window,Worker) only, so it's missing in
-      // this sandbox realm; build the same thing from setTimeout, which is here.
+      // AbortSignal.timeout is Exposed=(Window,Worker) only, so it's missing from
+      // this sandbox realm. Build the same thing out of setTimeout, which is here.
       createTimeoutSignal: (ms) => {
         const controller = new AbortController()
         setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), ms)
@@ -100,14 +140,23 @@ class SemanticScholarClient {
   }
 
   private storedKey(): string {
-    const raw = getPref(PREF_KEY)
-    return typeof raw === 'string' ? raw.trim() : ''
+    return effectiveKey(normalizeApiKey(getPref(PREF_KEY)))
   }
 
+  /**
+   * Select the attempt context, claiming the half-open slot atomically so that a
+   * backlog of pending lookups can't each fire off their own pair of 403s.
+   */
   private currentContext(): AttemptMode {
     const key = this.storedKey()
-    if (key === '' || !isKeyUsable(this.keyState, key)) return { mode: 'anonymous' }
-    return { mode: 'keyed', key, generation: this.keyState.keyGeneration }
+    if (key === '') return { mode: 'anonymous' }
+    const generation = this.keyState.keyGeneration
+    const { state, authority } = selectAttemptAuthority(this.keyState, key, monotonicNow())
+    this.keyState = state
+    if (authority === null) return { mode: 'anonymous' }
+    // Claiming the retry slot ends the pause, so take down the notice announcing it.
+    if (authority.kind === 'half_open') this.closeWarning()
+    return { mode: 'keyed', key, generation, authority }
   }
 
   private getSpacingMs(mode: 'keyed' | 'anonymous'): number {
@@ -127,16 +176,25 @@ class SemanticScholarClient {
     return ANON_FALLBACK_SPACING_MS
   }
 
-  private onKeyRejected(ref: KeyRef): void {
-    const { state, shouldWarn } = applyRejection(this.keyState, ref)
+  /** Reports whether the evidence stood. Only `'stale'` means it was declined. */
+  private onKeyRejected(ref: KeyRef, attempt: RejectionAttempt): RejectionDisposition {
+    const { state, shouldWarn, disposition } = applyRejection(this.keyState, ref, attempt, monotonicNow())
     this.keyState = state
-    if (!shouldWarn) return
-    // Recheck state in the microtask because shutdown or a key change may intervene.
+    if (!shouldWarn) return disposition
+    // Recheck state inside the microtask, since shutdown or a key change may intervene.
     queueMicrotask(() => {
       if (this.shutdownController.signal.aborted) return
-      if (!isRejectionCurrent(this.keyState, ref)) return
+      if (!isRejectionCurrent(this.keyState, ref, monotonicNow())) return
       this.showWarning(ref)
     })
+    return disposition
+  }
+
+  private onAuthAccepted(ref: KeyRef): void {
+    const before = this.keyState
+    this.keyState = recordAuthAccepted(before, ref)
+    // The notice says the key is paused, so it must not outlive the pause.
+    if (before.rejection !== null && this.keyState.rejection === null) this.closeWarning()
   }
 
   private showWarning(ref: KeyRef): void {
@@ -163,7 +221,8 @@ class SemanticScholarClient {
 
   flushPendingWarning(): void {
     const pending = this.keyState.pendingWarning
-    if (pending !== null && isRejectionCurrent(this.keyState, pending)) {
+    // A warning held back until a window appeared is stale once its cooldown elapses.
+    if (pending !== null && isRejectionCurrent(this.keyState, pending, monotonicNow())) {
       this.showWarning(pending)
     }
   }
@@ -218,17 +277,33 @@ class SemanticScholarClient {
   }
 
   /**
-   * Store and validate a key. Concurrent checks of the same key generation share
-   * one request; the returned key and generation let the UI reject stale results.
+   * Store and validate a key. An explicit check always reaches the network and is
+   * never short-circuited by a pause, so a key paused by an earlier failure can be
+   * rechecked without editing it or restarting Zotero. Concurrent checks of the
+   * same key generation share one request; the returned key and generation let the
+   * UI throw away stale results.
    */
   async commitAndValidate(rawInput: string, callerSignal?: AbortSignal): Promise<CommitResult> {
-    const normalizedKey = rawInput.trim()
+    const normalized = normalizeApiKey(rawInput)
+    const normalizedKey = normalized.key
     setPref(PREF_KEY, normalizedKey)
-    this.reconcileKeyChange(normalizedKey)
+    // Reconcile against the key we would actually send, matching storedKey().
+    this.reconcileKeyChange(effectiveKey(normalized))
     const generation = this.keyState.keyGeneration
+    const removedCharacters = normalized.removed.length > 0 ? normalized.removed : undefined
 
-    if (normalizedKey === '') return { status: 'empty', normalizedKey, generation }
-    if (!isKeyUsable(this.keyState, normalizedKey)) return { status: 'invalid', normalizedKey, generation }
+    if (normalizedKey === '') return { status: 'empty', normalizedKey, generation, removedCharacters }
+    if (normalized.unusable.length > 0) {
+      // Sending this would throw at Headers construction, which looks like a network
+      // failure. Name the characters rather than let every request fail silently.
+      return {
+        status: 'client_error',
+        detail: `Key contains characters that cannot be sent: ${normalized.unusable.join(', ')}`,
+        normalizedKey,
+        generation,
+        removedCharacters,
+      }
+    }
 
     const dedupeKey = `${generation}:${normalizedKey}`
     let probe = this.inFlightProbes.get(dedupeKey)
@@ -236,26 +311,31 @@ class SemanticScholarClient {
       probe = this.probe(normalizedKey, generation, callerSignal).finally(() => this.inFlightProbes.delete(dedupeKey))
       this.inFlightProbes.set(dedupeKey, probe)
     }
-    return { status: await probe, normalizedKey, generation }
+    const outcome = await probe
+    return { ...outcome, normalizedKey, generation, removedCharacters }
   }
 
-  private async probe(key: string, generation: number, callerSignal?: AbortSignal): Promise<ValidationStatus> {
-    const ctx: AttemptMode = { mode: 'keyed', key, generation }
-    const result = await this.core.requestS2(PROBE_PAPER_ID, ctx, callerSignal, { maxRetries: 0 })
+  private async probe(key: string, generation: number, callerSignal?: AbortSignal): Promise<ProbeOutcome> {
+    const ctx: AttemptMode = { mode: 'keyed', key, generation, authority: { kind: 'bypass' } }
+    const result = await this.core.requestS2(PROBE_PAPER_ID, ctx, callerSignal, { maxRetries: PROBE_MAX_RETRIES })
     switch (result.kind) {
       case 'aborted':
-        return 'aborted'
+        return { status: 'aborted' }
       case 'transient':
-        return 'indeterminate'
+        return { status: 'indeterminate', detail: result.cause }
       case 'ineligible':
-        return 'invalid'
+        // Nothing was sent, so this is not evidence that the server rejected the key.
+        return { status: 'indeterminate' }
+      case 'auth_rejected':
+        return { status: 'invalid', detail: result.detail }
+      case 'auth_unconfirmed':
+        return { status: 'indeterminate', detail: result.detail }
       case 'response': {
         const s = result.status
-        if ((s >= 200 && s < 300) || s === 404) return 'valid'
-        if (s === 401 || s === 403) return 'invalid'
-        if (s === 429 || s === 408 || s >= 500) return 'indeterminate'
-        if (s >= 400 && s < 500) return 'client_error'
-        return 'indeterminate'
+        if ((s >= 200 && s < 300) || s === 404) return { status: 'valid' }
+        if (s === 429 || s === 408 || s >= 500) return { status: 'indeterminate' }
+        if (s >= 400 && s < 500) return { status: 'client_error' }
+        return { status: 'indeterminate' }
       }
     }
   }
@@ -265,15 +345,15 @@ let instance: SemanticScholarClient | null = null
 let stopped = false
 
 /**
- * The sole capability gate for Semantic Scholar features. The bootstrap bridge
- * publishes this report; when it is absent or degraded, no code path may
- * construct the client (the bridged globals are throwing tripwire stubs).
+ * The one capability gate for Semantic Scholar features. The bootstrap bridge
+ * publishes this report; if it is absent or degraded, no code path may construct
+ * the client, since the bridged globals are throwing tripwire stubs.
  */
 export function isSemanticScholarAvailable(): boolean {
   return _globalThis.__runtimeBridgeReport?.semanticScholarAvailable === true
 }
 
-/** Lazy singleton — nothing is constructed at bundle evaluation. */
+/** Lazy singleton, so nothing is constructed at bundle evaluation. */
 export function getSemanticScholarClient(): SemanticScholarClient {
   if (!isSemanticScholarAvailable()) throw new Error('Semantic Scholar is unavailable in this Zotero runtime')
   if (stopped) throw new Error('Semantic Scholar client is shut down')
@@ -281,7 +361,7 @@ export function getSemanticScholarClient(): SemanticScholarClient {
   return instance
 }
 
-// Guard both flags: no-op when never constructed or already stopped.
+// Guard both flags, so this does nothing if never constructed or already stopped.
 export function flushPendingSemanticScholarWarning(): void {
   if (!stopped) instance?.flushPendingWarning()
 }
@@ -291,9 +371,9 @@ export function closeSemanticScholarWarning(): void {
 }
 
 /**
- * `instance` is not nulled: late async continuations must keep seeing the
- * aborted client rather than mint a fresh live one. Re-enable gets fresh module
- * state because the bundle is re-evaluated per startup.
+ * `instance` is not nulled, because late async continuations have to keep seeing
+ * the aborted client rather than build a fresh live one. Re-enabling the plugin
+ * gets fresh module state anyway, since the bundle is re-evaluated per startup.
  */
 export function shutdownSemanticScholarClient(): void {
   stopped = true // set before abort, so getSemanticScholarClient() can't hand back a live client

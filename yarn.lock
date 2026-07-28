@@ -2995,15 +2995,15 @@ __metadata:
     prettier: "npm:^3.9.6"
     typescript: "npm:^6.0.3"
     typescript-eslint: "npm:^8.65.0"
-    zotero-plugin-scaffold: "npm:^0.8.7"
+    zotero-plugin-scaffold: "npm:^0.8.8"
     zotero-plugin-toolkit: "npm:5.2.0"
     zotero-types: "npm:4.1.3"
   languageName: unknown
   linkType: soft
 
-"zotero-plugin-scaffold@npm:^0.8.7":
-  version: 0.8.7
-  resolution: "zotero-plugin-scaffold@npm:0.8.7"
+"zotero-plugin-scaffold@npm:^0.8.8":
+  version: 0.8.8
+  resolution: "zotero-plugin-scaffold@npm:0.8.8"
   dependencies:
     "@fluent/syntax": "npm:^0.19.0"
     "@octokit/rest": "npm:^22.0.1"
@@ -3023,7 +3023,7 @@ __metadata:
     xvfb-ts: "npm:^1.1.1"
   bin:
     zotero-plugin: ./bin/zotero-plugin.mjs
-  checksum: 10c0/e682aec1393054801bc09b8e88f779dc8b07d52ca712cf9b4697bc549250d8b64b77d660f056d3ceab3b00d0e9bae146226dc8c080a2cca9d2a8a9a8d09db200
+  checksum: 10c0/60d452ae6e516c4b19d8ada336bf26c5837cd5515d2f32eb9a351dbecca4fcef0d8f54c6e87bcf603e3dd5ac4a9d0f1a83ebed9a4e1cbcb3a4545f80f70a5476
   languageName: node
   linkType: hard
 

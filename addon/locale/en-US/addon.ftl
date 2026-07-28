@@ -33,8 +33,8 @@ database-inspire = INSPIRE
 database-semanticscholar = SemanticScholar
 
 # Semantic Scholar API key
-semantic-scholar-key-rejected = Semantic Scholar API key was rejected (HTTP 401/403). Continuing without it. Update or clear the key in Citation Tally settings, or restart Zotero, to retry.
-semantic-scholar-unavailable = Semantic Scholar is unavailable in this Zotero runtime and has been disabled. Other citation databases keep working.
+semantic-scholar-key-rejected = Semantic Scholar rejected your API key. Citation Tally has stopped using it and will try again later.
+semantic-scholar-unavailable = Semantic Scholar isn't available and has been turned off. The other citation databases still work.
 
 # Column and tooltip
 column-citations = Citations

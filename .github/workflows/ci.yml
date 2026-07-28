@@ -37,10 +37,10 @@ jobs:
       - run: yarn tsc -p tsconfig.test.json --noEmit
       - run: yarn test:unit
 
-  # Real-Zotero startup gate on the platform condition that bricked v0.0.14:
-  # Linux has no hidden DOM window, so the plugin must reach full-capability
-  # startup (initialized flag + bridge report + bundle-realm fetch self-test)
-  # in an actual Zotero. The scaffold runs headless (Xvfb) in CI.
+  # Linux has no hidden DOM window, which is the condition that bricked v0.0.14,
+  # so the plugin has to reach full-capability startup in a real Zotero: the
+  # initialized flag, the bridge report, and the bundle-realm fetch self-test.
+  # The scaffold runs headless under Xvfb in CI.
   zotero-runtime-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -58,18 +58,18 @@ jobs:
           extract_dir="$RUNNER_TEMP/zotero-release"
           mkdir -p "$extract_dir"
 
-          # Resolved at job time: the gate must exercise the Zotero users
-          # actually run, not a version frozen when this file was written.
+          # Resolved at job time, so the gate exercises whatever Zotero users are
+          # actually running rather than a version pinned in this file.
           url=$(curl -fL --retry 3 --remove-on-error \
             -o "$archive" -w "%{url_effective}" \
             "https://www.zotero.org/download/client/dl?channel=release&platform=linux-x86_64")
 
           echo "Zotero: $url" | tee -a "$GITHUB_STEP_SUMMARY"
-          # Diagnostic only: records which build was tested; does not
+          # Diagnostic only. Records which build was tested; it doesn't
           # authenticate a mutable download.
           sha256sum "$archive"
-          # No -j/-J: tar detects compression from the signature, so an upstream
-          # format change (.tar.bz2 -> .tar.xz) cannot break extraction again.
+          # No -j/-J, since tar detects compression from the signature. An upstream
+          # format change (.tar.bz2 -> .tar.xz) then can't break extraction.
           tar -xf "$archive" -C "$extract_dir"
 
           bin=$(find "$extract_dir" -type f -name zotero -perm -u+x -print -quit)

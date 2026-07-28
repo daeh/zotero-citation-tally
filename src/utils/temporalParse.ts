@@ -90,7 +90,7 @@ function buildUtcInstant(
   }
 }
 
-/** Parse the three RFC 9110 HTTP-date forms. Returns `null` on any doubt. */
+/** Parse the three RFC 9110 HTTP-date forms. Returns `null` if none of them match. */
 function parseHttpDate(value: string, nowYear: number): Temporal.Instant | null {
   // IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT"
   let m = /^[A-Za-z]{3}, (\d{2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/.exec(value)

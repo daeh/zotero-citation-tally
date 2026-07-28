@@ -21,12 +21,7 @@ import {
   maybeShowProactiveDegradedNotice,
   notifySemanticScholarUnavailable,
 } from './modules/degradedNotice'
-import {
-  registerPrefsScripts,
-  toggleApiKeyVisibility,
-  validateApiKeyUI,
-  validateDatabaseOrder,
-} from './modules/preferenceScript'
+import { registerPrefsScripts, validateApiKeyUI, validateDatabaseOrderUI } from './modules/preferenceScript'
 import {
   closeSemanticScholarWarning,
   flushPendingSemanticScholarWarning,
@@ -50,7 +45,7 @@ async function onStartup() {
   BasicRegistrar.registerPrefs()
 
   // Key changes must be observed before any lookup can start. In the degraded
-  // runtime the client is never constructed; startup must still complete.
+  // runtime the client is never constructed, but startup still has to finish.
   if (isSemanticScholarAvailable()) {
     getSemanticScholarClient().registerObserver()
   }
@@ -111,7 +106,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   await new Promise((resolve) => setTimeout(resolve, 1000))
   if (!addon.data.alive) {
-    // Late wake after shutdown: close the popup this hook created, register nothing.
+    // Woken late, after shutdown. Close the popup this hook created and register nothing.
     popupWin.close()
     return
   }
@@ -154,8 +149,8 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   // Display a key-rejection warning that was deferred until a window existed.
   flushPendingSemanticScholarWarning()
 
-  // Tell users whose configuration includes Semantic Scholar when the runtime
-  // cannot support it (no-op in the normal full-capability runtime).
+  // Tell users whose configuration includes Semantic Scholar when this runtime
+  // can't support it. Does nothing in the normal full-capability runtime.
   maybeShowProactiveDegradedNotice()
 
   // addon.hooks.onDialogEvents('dialogExample')
@@ -182,9 +177,9 @@ function runTeardownSteps(steps: readonly (() => void)[]): void {
 function onShutdown(): void {
   // Set before teardown so reentrant callbacks already see the plugin as dead.
   addon.data.alive = false
-  // Cancel work before unregistering UI. If a step throws and the delete below
-  // is skipped, the stale Zotero[addonInstance] makes the index.ts guard keep
-  // the old instance on re-enable — so every step runs, come what may.
+  // Cancel work before unregistering UI. Every step has to run: if one throws and
+  // the delete below is skipped, the stale Zotero[addonInstance] makes the
+  // index.ts guard keep the old instance when the plugin is re-enabled.
   runTeardownSteps([
     () => cancelAutomaticUpdate(),
     () => cancelMonthlyCleanup(),
@@ -228,13 +223,10 @@ function onPrefsEvent(type: string, data: Record<string, any>) {
       void registerPrefsScripts(data.window)
       break
     case 'validateDatabases':
-      validateDatabaseOrder(data.window)
+      validateDatabaseOrderUI(data.window)
       break
     case 'validateApiKey':
       void validateApiKeyUI(data.window)
-      break
-    case 'toggleApiKeyVisibility':
-      toggleApiKeyVisibility(data.window)
       break
     default:
       return
@@ -280,9 +272,9 @@ function onDialogEvents(type: string) {
       UX.updateSelectedItemsCitationCounts()
       break
     case 'retallyOutdatedCitations':
-      // Surface the runtime-degraded state at action time (no-op in full mode).
+      // Surface the degraded runtime at action time. Does nothing in full mode.
       notifySemanticScholarUnavailable()
-      void startAutomaticUpdate(false) // false = show progress UI
+      void startAutomaticUpdate(false, 'manual') // false = show progress UI
       break
     default:
       break
