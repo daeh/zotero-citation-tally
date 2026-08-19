@@ -13,3 +13,7 @@ logs
 **/*-lintignore*
 .scaffold
 *.code-workspace
+
+### Scaffold-generated; the generator is authoritative (see private .prettierignore).
+typings/i10n.d.ts
+typings/prefs.d.ts

@@ -16,7 +16,16 @@
 ### generated directories ###
 #########
 node_modules
-.yarn
+
+### Deny the directory's contents, then re-admit what is genuinely source.
+### Must be `.yarn/*`, never `.yarn/` -- git cannot re-include a path whose
+### parent directory is excluded.
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 
 #########
 ### generated files ###
@@ -39,3 +48,8 @@ tsconfig.tsbuildinfo
 .scaffold
 build
 logs
+
+#########
+### macOS ###
+#########
+.DS_Store

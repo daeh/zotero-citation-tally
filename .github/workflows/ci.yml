@@ -76,8 +76,20 @@ jobs:
           [ -n "$bin" ] || { echo "::error::No Zotero binary in $url"; exit 1; }
           echo "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$bin" >> "$GITHUB_ENV"
       - name: Run Zotero runtime smoke
-        run: yarn test
+        # Zotero is a GUI application. With no X display it never starts, so
+        # the scaffold blocks forever waiting for a debugger port that never
+        # opens and the job burns its whole timeout in silence -- no error, no
+        # artifact, nothing after the scaffold's last build line. Whether an
+        # Xvfb happens to be running is a property of the runner image, not of
+        # this workflow: v0.0.18's first candidate hung on image 20260810.271
+        # and the identical commit passed in 50s on a rerun. `xvfb-run -a`
+        # provisions a display and picks a free server number, so it is correct
+        # whether or not the image already has one. `xvfb` is preinstalled on
+        # ubuntu-24.04 (2:21.1.12-1ubuntu1.6).
+        run: xvfb-run -a yarn test
       - name: Preserve Zotero test profile and logs
+        # Note: this cannot fire on a *job*-level `timeout-minutes`, which
+        # GitHub reports as `cancelled` rather than `failure`.
         if: failure()
         uses: actions/upload-artifact@v7
         with:

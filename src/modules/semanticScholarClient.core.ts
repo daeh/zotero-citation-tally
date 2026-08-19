@@ -87,7 +87,8 @@ export interface S2CoreDeps {
   monotonicNow: () => number
   /** Wall-clock epoch milliseconds. */
   nowEpochMs: () => number
-  createTimeoutSignal: (ms: number) => AbortSignal
+  /** Returns the signal plus a disposer that must be called when the request settles. */
+  createTimeoutSignal: (ms: number) => { signal: AbortSignal; dispose: () => void }
   combineSignals: (signals: AbortSignal[]) => AbortSignal
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>
   random: () => number
@@ -340,8 +341,8 @@ export class SemanticScholarClientCore {
       const slot = await this.acquireSlot(ctx, identity, waitSignal, callerSignal)
       if (!slot.ok) return slot.result
 
-      const timeoutSignal = this.deps.createTimeoutSignal(this.cfg.timeoutMs)
-      const fetchSignal = this.composeFetchSignal(callerSignal, timeoutSignal)
+      const timeout = this.deps.createTimeoutSignal(this.cfg.timeoutMs)
+      const fetchSignal = this.composeFetchSignal(callerSignal, timeout.signal)
       const headers: Record<string, string> = { 'User-Agent': this.deps.userAgent }
       if (ctx.mode === 'keyed') headers['x-api-key'] = ctx.key
       const init: RequestInit = { redirect: 'error', cache: 'no-store', signal: fetchSignal, headers }
@@ -423,6 +424,10 @@ export class SemanticScholarClientCore {
         }
         transientRetries += 1
         continue
+      } finally {
+        // Without this the timer survives the response and fires later; one
+        // stray wakeup per request.
+        timeout.dispose()
       }
     }
   }

@@ -276,8 +276,7 @@ function bindPrefEvents() {
   // Refresh the item tree columns so a colour change applies without a restart.
   const useColorsRadioGroup = window.document?.querySelector(`#${prefPrefix}-useColors`)
   useColorsRadioGroup?.addEventListener('command', () => {
-    const manager = Zotero.ItemTreeManager as { refreshColumns?: () => void }
-    manager.refreshColumns?.()
+    Zotero.ItemTreeManager.refreshColumns()
   })
 
   bindApiKeyField(window)

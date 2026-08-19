@@ -4,6 +4,7 @@
  */
 
 import { config, version } from '../../package.json'
+import { combineAbortSignals, createTimeoutSignal, interruptibleSleep } from '../utils/abort'
 import { normalizeApiKey } from '../utils/apiKey'
 import { getString } from '../utils/locale'
 import { getPref, setPref } from '../utils/prefs'
@@ -72,28 +73,6 @@ function monotonicNow(): number {
   return performance ? performance.now() : Temporal.Now.instant().epochMilliseconds
 }
 
-function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
-  return AbortSignal.any(signals)
-}
-
-function interruptibleSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted === true) {
-      reject(new DOMException('Aborted', 'AbortError'))
-      return
-    }
-    const onAbort = () => {
-      clearTimeout(timer)
-      reject(new DOMException('Aborted', 'AbortError'))
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    signal?.addEventListener('abort', onAbort, { once: true })
-  })
-}
-
 class SemanticScholarClient {
   private keyState: KeyState = initialKeyState()
   private lastObservedKey = ''
@@ -121,12 +100,10 @@ class SemanticScholarClient {
       monotonicNow,
       nowEpochMs: () => Temporal.Now.instant().epochMilliseconds,
       // AbortSignal.timeout is Exposed=(Window,Worker) only, so it's missing from
-      // this sandbox realm. Build the same thing out of setTimeout, which is here.
-      createTimeoutSignal: (ms) => {
-        const controller = new AbortController()
-        setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), ms)
-        return controller.signal
-      },
+      // this sandbox realm. `createTimeoutSignal` builds the same thing out of
+      // setTimeout -- and clears the timer, which the previous inline version
+      // never did, leaking one per request.
+      createTimeoutSignal,
       combineSignals: combineAbortSignals,
       sleep: interruptibleSleep,
       random: () => Math.random(),

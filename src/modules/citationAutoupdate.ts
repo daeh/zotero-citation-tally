@@ -1,28 +1,14 @@
 import { getErrorMessage, isErrorNamed } from '../utils/errors'
+import { escapeRegExp } from '../utils/extraField'
+import { parseIgnoreStore, shouldRetryIgnoredItem } from '../utils/ignoreStore'
 import { getString } from '../utils/locale'
+import { debugLog, debugLogLazy } from '../utils/log'
 import { getPref } from '../utils/prefs'
-import { retryAgeExceeded } from '../utils/retryAge'
-import { parseCitationStampDate, parseDateAddedInstant, parseLastCheckedInstant } from '../utils/temporalParse'
+import { parseCitationStampDate, parseDateAddedInstant } from '../utils/temporalParse'
 
 import { Helpers, updateItem } from './citationTally'
 import { effectiveDatabases } from './citationTypes'
 import { isSemanticScholarAvailable } from './semanticScholarClient'
-
-// Ignored items data type
-type IgnoredItemsData = Record<
-  string, // Database ID
-  Record<
-    string, // Item ID
-    {
-      count: number // Number of times that the database returned "not_found" for the item
-      lastChecked: string // ISO date of last check
-    }
-  >
->
-
-function shouldRetryIgnoredItem(count: number, lastChecked: string): boolean {
-  return retryAgeExceeded(count, parseLastCheckedInstant(lastChecked), Temporal.Now.instant())
-}
 
 // Preference values outside the menu options fall back to six months.
 const ALLOWED_CUTOFF_MONTHS: ReadonlySet<number> = new Set([3, 6, 12, 24])
@@ -55,21 +41,10 @@ function isItemIgnoredForAutoupdate(itemId: number): boolean {
 
   // Check if item is ignored across all databases
 
-  const ignoredData = getPref('ignoredItems')
-  if (!ignoredData) {
-    // No ignored items data
-    return false
-  }
-
-  // Load ignored items data
-
-  let data: IgnoredItemsData
-  try {
-    data = JSON.parse(ignoredData)
-  } catch (error) {
-    // Failed to parse ignored items JSON
-    return false
-  }
+  // One shared parser for every reader of this pref, so the schema migration in
+  // `parseIgnoreStore` cannot be bypassed by a hand-rolled parse.
+  const store = parseIgnoreStore(getPref('ignoredItems'))
+  const data = store.entries
 
   const itemKey = itemId.toString()
 
@@ -80,7 +55,7 @@ function isItemIgnoredForAutoupdate(itemId: number): boolean {
   for (const database of databases) {
     if (data[database]?.[itemKey]) {
       const itemData = data[database][itemKey]
-      const shouldRetry = shouldRetryIgnoredItem(itemData.count, itemData.lastChecked)
+      const shouldRetry = shouldRetryIgnoredItem(itemData, Temporal.Now.instant())
       // Check retry eligibility for this database
 
       if (shouldRetry) {
@@ -193,15 +168,7 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
   const isArxivDoi = identifier.type === 'doi' && identifier.id.includes('arXiv')
 
   // Get ignored items data to filter out blocked databases
-  const ignoredData = getPref('ignoredItems')
-  let ignoredItemsData: IgnoredItemsData = {}
-  if (ignoredData) {
-    try {
-      ignoredItemsData = JSON.parse(ignoredData)
-    } catch {
-      // Continue with empty ignored data
-    }
-  }
+  const ignoredItemsData = parseIgnoreStore(getPref('ignoredItems')).entries
 
   const itemKey = item.id.toString()
   const reasons: string[] = []
@@ -240,7 +207,7 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
     // Skip if this database is currently blocked for this item
     if (ignoredItemsData[database]?.[itemKey]) {
       const itemData = ignoredItemsData[database][itemKey]
-      const shouldRetry = shouldRetryIgnoredItem(itemData.count, itemData.lastChecked)
+      const shouldRetry = shouldRetryIgnoredItem(itemData, Temporal.Now.instant())
       if (!shouldRetry) {
         reasons.push(`${database}_blocked_until_retry`)
         continue
@@ -253,7 +220,12 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
 
     // Look for citation data for this specific database
     const dbTitle = getOperationName(database)
-    const patt_date = new RegExp(`^Citations: *\\d+ *\\(${dbTitle}\\) *\\[(\\d{4}-\\d{1,2}-\\d{1,2})\\]`, 'i')
+    // Escaped: display names come from FTL, so a translator using `(`, `.`,
+    // or `+` would otherwise change what this matches, or throw.
+    const patt_date = new RegExp(
+      `^Citations: *\\d+ *\\(${escapeRegExp(dbTitle)}\\) *\\[(\\d{4}-\\d{1,2}-\\d{1,2})\\]`,
+      'i',
+    )
 
     const lines = extra.split('\n')
     let found = false
@@ -299,10 +271,12 @@ function isCitationDataOutdated(item: Zotero.Item): [boolean, string] {
  * @returns Array of items that need updates, sorted by date added (newest first)
  */
 async function getItemsNeedingUpdate(): Promise<Zotero.Item[]> {
-  const s = new Zotero.Search()
+  // `libraryID` is read-only on the instance; the constructor is the supported
+  // way to set it (`Zotero.Search` passes `name` and `libraryID` through
+  // `assignProps`). The previous `s.libraryID = ...` needed a `@ts-ignore`
+  // whose comment misattributed the error to `userLibraryID` being untyped.
+  const s = new Zotero.Search({ libraryID: Zotero.Libraries.userLibraryID })
 
-  // @ts-ignore - userLibraryID is not properly typed in Zotero API
-  s.libraryID = Zotero.Libraries.userLibraryID
   s.addCondition('deleted', 'false', '')
   s.addCondition('itemType', 'isNot', 'attachment')
   s.addCondition('itemType', 'isNot', 'note')
@@ -310,7 +284,7 @@ async function getItemsNeedingUpdate(): Promise<Zotero.Item[]> {
   const itemIds = await s.search()
   const allItems = await Zotero.Items.getAsync(itemIds)
 
-  ztoolkit.log(`Auto update debug: Found ${allItems.length} total library items`)
+  debugLog(`Auto update debug: Found ${allItems.length} total library items`)
 
   const itemsNeedingUpdate: Zotero.Item[] = []
   const debugReasons: { id: number; title: string; identifier: any; extra: string; reason: string }[] = []
@@ -356,17 +330,18 @@ async function getItemsNeedingUpdate(): Promise<Zotero.Item[]> {
     }
   }
 
-  ztoolkit.log('Auto update debug: Item filtering summary:')
-  ztoolkit.log(`  - Total items: ${allItems.length}`)
-  ztoolkit.log(`  - Regular items: ${regularItemCount}`)
-  ztoolkit.log(`  - Items with identifier: ${itemsWithIdentifierCount}`)
-  ztoolkit.log(`  - Items ignored: ${ignoredItemCount}`)
-  ztoolkit.log(`  - Items outdated: ${outdatedItemCount}`)
-  ztoolkit.log(`  - Final items needing update: ${itemsNeedingUpdate.length}`)
+  debugLog('Auto update debug: Item filtering summary:')
+  debugLog(`  - Total items: ${allItems.length}`)
+  debugLog(`  - Regular items: ${regularItemCount}`)
+  debugLog(`  - Items with identifier: ${itemsWithIdentifierCount}`)
+  debugLog(`  - Items ignored: ${ignoredItemCount}`)
+  debugLog(`  - Items outdated: ${outdatedItemCount}`)
+  debugLog(`  - Final items needing update: ${itemsNeedingUpdate.length}`)
 
-  ztoolkit.log('*** DETAILED DEBUG REASONS FOR AUTOUPDATE SELECTION ***')
-  ztoolkit.log(JSON.stringify(debugReasons, null, 2))
-  ztoolkit.log('*** END DETAILED DEBUG REASONS ***')
+  // Lazy: this serialized the whole scan -- item ids, titles, identifiers, and
+  // Extra-field excerpts -- on every library scan, whether or not anyone was
+  // reading the log.
+  debugLogLazy(() => ['Citation debug - autoupdate selection:', JSON.stringify(debugReasons, null, 2)])
 
   // Sort by date added (newest first)
   itemsNeedingUpdate.sort(compareByDateAddedDesc)
@@ -498,7 +473,8 @@ async function processAutoUpdateQueue(silent: boolean = false) {
   const progress = Math.round((autoUpdateIndex / autoUpdateQueue.length) * 100)
   const title = item?.getField('title') || 'No title'
 
-  ztoolkit.log(`[${autoUpdateIndex + 1}/${autoUpdateQueue.length}] Processing: ${title} (${progress}%)`)
+  // Includes the item title, and fires once per item.
+  debugLog(`[${autoUpdateIndex + 1}/${autoUpdateQueue.length}] Processing: ${title} (${progress}%)`)
 
   if (autoUpdateQueue.length === 0) {
     ztoolkit.log('Auto update: No items in queue, stopping')

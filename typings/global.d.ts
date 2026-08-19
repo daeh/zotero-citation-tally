@@ -12,6 +12,23 @@ declare interface RuntimeBridgeReport {
   semanticScholarAvailable: boolean
 }
 
+/**
+ * The slice of Gecko's `MozXULElement` this plugin uses.
+ *
+ * `zotero-types` does not declare it, and it is a Mozilla platform global
+ * rather than a Zotero API. Declaring the one method narrowly is better than
+ * the `@ts-ignore` this replaces, which suppressed every error on the line.
+ */
+declare interface MozXULElementStatics {
+  insertFTLIfNeeded: (href: string) => void
+}
+
+declare namespace _ZoteroTypes {
+  interface MainWindow {
+    MozXULElement: MozXULElementStatics
+  }
+}
+
 declare type ZToolkit = ReturnType<typeof import('../src/utils/ztoolkit').createZToolkit>
 
 declare const ztoolkit: ZToolkit

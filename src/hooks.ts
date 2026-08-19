@@ -1,5 +1,6 @@
 import { cancelAutomaticUpdate, startAutomaticUpdate } from './modules/citationAutoupdate'
 import {
+  abortInFlightLookups,
   BasicRegistrar,
   cancelManualUpdate,
   cancelMonthlyCleanup,
@@ -7,15 +8,6 @@ import {
   UIRegistrar,
   UX,
 } from './modules/citationTally'
-/* PUBIGNORE 
-import {
-  BasicExampleFactory,
-  HelperExampleFactory,
-  KeyExampleFactory,
-  PromptExampleFactory,
-  UIExampleFactory,
-} from './modules/examples'
-*/
 import {
   closeDegradedNotice,
   maybeShowProactiveDegradedNotice,
@@ -30,8 +22,6 @@ import {
   shutdownSemanticScholarClient,
 } from './modules/semanticScholarClient'
 import { getString, initLocale } from './utils/locale'
-// import { getPref } from './utils/prefs'
-import { createZToolkit } from './utils/ztoolkit'
 
 async function onStartup() {
   await Promise.all([Zotero.initializationPromise, Zotero.unlockPromise, Zotero.uiReadyPromise])
@@ -56,17 +46,12 @@ async function onStartup() {
   // Register custom column for citation counts
   UIRegistrar.registerCitationColumn()
 
-  // KeyExampleFactory.registerShortcuts()
-
-  // await UIExampleFactory.registerExtraColumn()
-
-  // await UIExampleFactory.registerExtraColumnWithCustomCell()
-
-  // UIExampleFactory.registerItemPaneCustomInfoRow()
-
-  // UIExampleFactory.registerItemPaneSection()
-
-  // UIExampleFactory.registerReaderItemPaneSection()
+  // Process-wide registrations. These used to live in onMainWindowLoad, which
+  // runs once per main window, so a second window re-registered the menus and
+  // orphaned the first window's preference-observer ids.
+  UIRegistrar.registerCitationCountMenuItem()
+  UIRegistrar.registerRetallyCitationsMenuItem()
+  UIRegistrar.registerThemeObservers()
 
   await Promise.all(Zotero.getMainWindows().map((win) => onMainWindowLoad(win)))
 
@@ -85,12 +70,8 @@ async function onStartup() {
 }
 
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
-  // Create ztoolkit for every window
-  addon.data.ztoolkit = createZToolkit()
-
-  // @ts-ignore This is a moz feature
-  win.MozXULElement.insertFTLIfNeeded(`${addon.data.config.addonRef}-mainWindow.ftl`)
-  // @ts-ignore This is a moz feature
+  // The toolkit is process-wide and is created once in the Addon constructor.
+  // Re-creating it here simply replaced the shared instance on every window.
   win.MozXULElement.insertFTLIfNeeded(`${addon.data.config.addonRef}-addon.ftl`)
 
   const popupWin = new ztoolkit.ProgressWindow(addon.data.config.addonName, {
@@ -115,30 +96,9 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     text: getString('startup-progress', { args: { percent: 30, message: getString('startup-begin') } }),
   })
 
-  // UIExampleFactory.registerStyleSheet(win) // PUBIGNORE
-
-  // UIExampleFactory.registerRightClickMenuItem() // PUBIGNORE
-
-  // UIExampleFactory.registerRightClickMenuPopup(win) // PUBIGNORE
-
-  // UIExampleFactory.registerWindowMenuWithSeparator() // PUBIGNORE
-
-  // Register citation count update menu item
-  UIRegistrar.registerCitationCountMenuItem()
-
-  // Register retally outdated citations menubar item
-  UIRegistrar.registerRetallyCitationsMenuItem()
-
-  // Register theme change observers to update column colors
-  UIRegistrar.registerThemeObservers()
-
-  // PromptExampleFactory.registerNormalCommandExample() // PUBIGNORE
-
-  // PromptExampleFactory.registerAnonymousCommandExample(win) // PUBIGNORE
-
-  // PromptExampleFactory.registerConditionalCommandExample() // PUBIGNORE
-
-  // await Zotero.Promise.delay(1000)
+  // Per-window: system theme changes are observed through this window's
+  // MediaQueryList, and removed again when it unloads.
+  UIRegistrar.registerWindowThemeListener(win)
 
   popupWin.changeLine({
     progress: 100,
@@ -152,12 +112,13 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   // Tell users whose configuration includes Semantic Scholar when this runtime
   // can't support it. Does nothing in the normal full-capability runtime.
   maybeShowProactiveDegradedNotice()
-
-  // addon.hooks.onDialogEvents('dialogExample')
 }
 
 function onMainWindowUnload(win: Window): void {
-  ztoolkit.unregisterAll()
+  // Only this window's resources. `ztoolkit.unregisterAll()` used to run here,
+  // which tore down registrations still needed by any other open window; it now
+  // runs once, at shutdown.
+  UIRegistrar.unregisterWindowThemeListener(win)
   closeSemanticScholarWarning()
   closeDegradedNotice()
   addon.data.dialog?.window?.close()
@@ -184,6 +145,10 @@ function onShutdown(): void {
     () => cancelAutomaticUpdate(),
     () => cancelMonthlyCleanup(),
     () => cancelManualUpdate(),
+    // Cancel in-flight Crossref/INSPIRE requests too; without a deadline they
+    // could otherwise outlive the plugin.
+    () => abortInFlightLookups(),
+    () => UIRegistrar.unregisterNotifier(),
     () => shutdownSemanticScholarClient(),
     () => closeDegradedNotice(),
     () => ztoolkit.unregisterAll(),
@@ -194,22 +159,6 @@ function onShutdown(): void {
   // @ts-expect-error addon instance is injected at runtime
   delete Zotero[addon.data.config.addonInstance]
 }
-
-/** PUBIGNORE
- * This function is just an example of dispatcher for Notify events.
- * Any operations should be placed in a function to keep this function clear.
- */
-/* PUBIGNORE
-async function onNotify(event: string, type: string, ids: (string | number)[], extraData: Record<string, any>) {
-  // Add code to the corresponding notify type
-  ztoolkit.log('notify', event, type, ids, extraData)
-  if (event == 'select' && type == 'tab' && extraData[ids[0]].type == 'reader') {
-    BasicExampleFactory.exampleNotifierCallback()
-  } else {
-    return
-  }
-}
-*/
 
 /**
  * Dispatcher for Preference UI events.
@@ -233,41 +182,8 @@ function onPrefsEvent(type: string, data: Record<string, any>) {
   }
 }
 
-/* PUBIGNORE 
-function onShortcuts(type: string) {
-  switch (type) {
-    case 'larger':
-      KeyExampleFactory.exampleShortcutLargerCallback()
-      break
-    case 'smaller':
-      KeyExampleFactory.exampleShortcutSmallerCallback()
-      break
-    default:
-      break
-  }
-  return
-}
-*/
-
 function onDialogEvents(type: string) {
   switch (type) {
-    /* PUBIGNORE 
-    case 'dialogExample':
-      HelperExampleFactory.dialogExample()
-      break
-    case 'clipboardExample':
-      HelperExampleFactory.clipboardExample()
-      break
-    case 'filePickerExample':
-      HelperExampleFactory.filePickerExample()
-      break
-    case 'progressWindowExample':
-      HelperExampleFactory.progressWindowExample()
-      break
-    case 'vtableExample':
-      HelperExampleFactory.vtableExample()
-      break
-    */
     case 'updateCitationCounts':
       UX.updateSelectedItemsCitationCounts()
       break
@@ -290,8 +206,6 @@ export default {
   onShutdown,
   onMainWindowLoad,
   onMainWindowUnload,
-  // onNotify, // PUBIGNORE
   onPrefsEvent,
-  // onShortcuts, // PUBIGNORE
   onDialogEvents,
 }

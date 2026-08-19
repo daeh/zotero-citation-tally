@@ -1,10 +1,6 @@
 startup-begin = 引用计数正在加载
 startup-finish = 引用计数已就绪
 startup-progress = [{ $percent }%] { $message }
-menuitem-label = 引用计数: 帮助工具样例
-menupopup-label = 引用计数: 弹出菜单
-menuitem-submenulabel = 引用计数
-menuitem-filemenulabel = 引用计数: 文件菜单
 menuitem-update-citation-tallies =
     .label = 更新引用计数
 menuitem-retally-outdated-citations =

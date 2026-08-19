@@ -1,15 +1,39 @@
+import { version } from '../../package.json'
+import { fetchWithDeadline } from '../utils/abort'
 import { isErrorNamed } from '../utils/errors'
+import {
+  CITATION_KEY_PATTERN,
+  escapeRegExp,
+  formatCitationLine,
+  insertBeforeMatch,
+  stripCitationLines,
+} from '../utils/extraField'
+import { classifyHttpStatus, classifyThrown, parseCitationCount } from '../utils/httpOutcome'
+import {
+  encodeIdentifierPath,
+  extractArxivId,
+  extractArxivIdFromUrl,
+  normalizeDoi,
+  stripArxivVersion,
+} from '../utils/identifiers'
+import {
+  IGNORE_STORE_VERSION,
+  parseIgnoreStore,
+  serializeIgnoreStore,
+  shouldRetryIgnoredItem,
+} from '../utils/ignoreStore'
 import { getLocaleID, getString } from '../utils/locale'
+import { debugLog } from '../utils/log'
+import { reserveSlot } from '../utils/pacing'
 import { getPref, setPref } from '../utils/prefs'
-import { retryAgeExceeded } from '../utils/retryAge'
-import { parseLastCheckedInstant } from '../utils/temporalParse'
 
 import { effectiveDatabases, semanticScholarUnavailableResult } from './citationTypes'
 import { notifySemanticScholarUnavailable } from './degradedNotice'
 import { getIgnorePolicy } from './ignorePolicy'
 import { getSemanticScholarClient, isSemanticScholarAvailable } from './semanticScholarClient'
 
-import type { ItemIdentifier, LookupResult } from './citationTypes'
+import type { ItemIdentifier, LookupResult, LookupStatus } from './citationTypes'
+import type { IgnoreEntries, IgnoreRecord } from '../utils/ignoreStore'
 
 // Semantic Scholar uses its own scheduler and has no entry in this millisecond table.
 const DEFAULT_RATE_LIMITS: Record<string, number> = {
@@ -19,10 +43,91 @@ const DEFAULT_RATE_LIMITS: Record<string, number> = {
 
 const MAX_RATE_LIMIT_MULTIPLIER = 10
 
+/** Deadline for a single Crossref or INSPIRE request. */
+const REQUEST_TIMEOUT_MS = 20_000
+
+/**
+ * Identifies the client to Crossref and INSPIRE, matching the Semantic Scholar
+ * client's format. Crossref routes requests carrying a contact address into its
+ * "polite pool", which is better resourced than the anonymous one; the project
+ * URL serves as that contact.
+ */
+const USER_AGENT = `Citation-Tally/${version} (+https://github.com/daeh/zotero-citation-tally; mailto:dev@daeh.info)`
+
+/** Headers every provider request sends. */
+const REQUEST_HEADERS: Readonly<Record<string, string>> = { 'User-Agent': USER_AGENT }
+
+/**
+ * Floors on request spacing, in milliseconds.
+ *
+ * `rateLimits` is a user-editable JSON pref, so a value below the provider's
+ * documented limit is clamped rather than honored. INSPIRE documents 15
+ * requests per 5 seconds, and asks for at least a 5s pause after a 429 -- the
+ * adaptive multiplier alone could retry sooner than that.
+ */
+const MIN_RATE_LIMITS: Record<string, number> = {
+  crossref: 1000,
+  inspire: 350,
+}
+
+/** Minimum backoff after a 429, per provider. */
+const MIN_BACKOFF_AFTER_429_MS: Record<string, number> = {
+  inspire: 5000,
+}
+
+/**
+ * Aborted when the plugin shuts down, so an in-flight lookup does not outlive
+ * it. Only constructed when the runtime actually has working abort primitives:
+ * in degraded mode `AbortController` is a throwing tripwire stub, and Crossref
+ * and INSPIRE must keep working there.
+ */
+let shutdownController: AbortController | null = null
+
+function requestCanAbort(): boolean {
+  // The bridge verifies AbortController and DOMException together and reports
+  // the result as `semanticScholarAvailable`; that flag is really "the abort
+  // primitives are real", which is what matters here too.
+  return isSemanticScholarAvailable()
+}
+
+function requestShutdownSignal(): AbortSignal | undefined {
+  if (!requestCanAbort()) return undefined
+  shutdownController ??= new AbortController()
+  return shutdownController.signal
+}
+
+/**
+ * Cancel every in-flight provider request.
+ *
+ * Safe in degraded mode: the controller is only ever constructed when the
+ * runtime has real abort primitives, so if it is null there is nothing to
+ * cancel *and* `DOMException` must not be constructed -- it is a throwing
+ * tripwire stub there. The early return makes that explicit rather than leaving
+ * it to optional-chaining argument-evaluation order.
+ */
+export function abortInFlightLookups(): void {
+  const controller = shutdownController
+  if (controller === null) return
+  shutdownController = null
+  controller.abort(new DOMException('Plugin shutting down', 'AbortError'))
+}
+
+function lookupFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetchWithDeadline(url, init, {
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    shutdownSignal: requestShutdownSignal(),
+    canAbort: requestCanAbort(),
+  })
+}
+
+/** Process-wide item-notifier registration. */
+let notifierID: string | null = null
+
 // Adaptive rate limiting state
 class RateLimitManager {
   private static multipliers: Record<string, number> = {}
-  private static lastRequestTime: Record<string, number | undefined> = {}
+  /** Earliest monotonic time the next request to each service may depart. */
+  private static nextAvailable: Record<string, number | undefined> = {}
 
   static getDelay(database: string): number {
     const baseLimits = getPref('rateLimits')
@@ -40,13 +145,25 @@ class RateLimitManager {
     }
 
     const multiplier = this.multipliers[database] || 1
-    return baseDelay * multiplier
+    // A user-set `rateLimits` value below the provider's documented limit is
+    // clamped, not honored.
+    const floor = MIN_RATE_LIMITS[database] ?? 0
+    return Math.max(baseDelay * multiplier, floor)
   }
 
   static handleRateLimit(database: string): void {
     const currentMultiplier = this.multipliers[database] || 1
     const newMultiplier = Math.min(currentMultiplier * 1.5, MAX_RATE_LIMIT_MULTIPLIER)
     this.multipliers[database] = newMultiplier
+
+    // Some providers document a minimum pause after a 429 that the multiplier
+    // alone would not reach. Push the next departure out to satisfy it.
+    const minPause = MIN_BACKOFF_AFTER_429_MS[database]
+    if (minPause !== undefined) {
+      const now = performance ? performance.now() : Temporal.Now.instant().epochMilliseconds
+      const current = this.nextAvailable[database] ?? now
+      this.nextAvailable[database] = Math.max(current, now + minPause)
+    }
 
     ztoolkit.log(`Rate limit detected for ${database}: increasing multiplier to ${newMultiplier.toFixed(1)}x`)
   }
@@ -68,59 +185,46 @@ class RateLimitManager {
     const delay = this.getDelay(database)
     // A separate sentinel avoids delaying the first request when the monotonic clock is near zero.
     const monotonicNow = () => (performance ? performance.now() : Temporal.Now.instant().epochMilliseconds)
-    const lastRequest = this.lastRequestTime[database]
-    if (lastRequest !== undefined) {
-      const timeSinceLastRequest = monotonicNow() - lastRequest
-      if (timeSinceLastRequest < delay) {
-        const waitTime = delay - timeSinceLastRequest
-        ztoolkit.log(
-          `Rate limiting ${database}: waiting ${waitTime}ms (${this.multipliers[database] || 1}x multiplier)`,
-        )
-        await new Promise((resolve) => setTimeout(resolve, waitTime))
-      }
+
+    // The slot is reserved *before* awaiting. Reading a timestamp, sleeping,
+    // then writing it let two concurrent callers observe the same value and
+    // depart together -- which the manual and automatic queues can both do.
+    const { waitMs, nextAvailableMs } = reserveSlot(this.nextAvailable[database], monotonicNow(), delay)
+    this.nextAvailable[database] = nextAvailableMs
+
+    if (waitMs > 0) {
+      debugLog(`Rate limiting ${database}: waiting ${waitMs}ms (${this.multipliers[database] || 1}x multiplier)`)
+      await new Promise((resolve) => setTimeout(resolve, waitMs))
     }
-    this.lastRequestTime[database] = monotonicNow()
   }
 }
 
 // Citation source operations
 
-// Ignored items tracking
-type IgnoredItemsData = Record<
-  string, // Database ID
-  Record<
-    string, // Item ID
-    {
-      count: number // Number of times that the database returned "not_found" for the item
-      lastChecked: string // ISO date of last check
-    }
-  >
->
-
+// Ignored items tracking. The on-disk shape, its migration, and the retry rule
+// all live in `utils/ignoreStore`, shared with `citationAutoupdate`.
 class IgnoredItemsManager {
   private static memoryCache = new Map<number, { databases: string[] }>() // Session-only cache for no_identifier
-  private static loaded = false
 
-  private static loadPersistentData(): IgnoredItemsData {
-    if (!this.loaded) {
-      this.loaded = true
-    }
-    const data = getPref('ignoredItems')
-    return data ? JSON.parse(data) : {}
+  private static loadPersistentData(): IgnoreEntries {
+    return parseIgnoreStore(getPref('ignoredItems')).entries
   }
 
-  private static savePersistentData(data: IgnoredItemsData): void {
-    setPref('ignoredItems', JSON.stringify(data))
+  private static savePersistentData(entries: IgnoreEntries): void {
+    setPref('ignoredItems', serializeIgnoreStore({ version: IGNORE_STORE_VERSION, entries }))
   }
 
-  private static shouldRetryItem(count: number, lastChecked: string): boolean {
-    return retryAgeExceeded(count, parseLastCheckedInstant(lastChecked), Temporal.Now.instant())
+  private static shouldRetryItem(record: IgnoreRecord): boolean {
+    return shouldRetryIgnoredItem(record, Temporal.Now.instant())
   }
 
   static markAsIgnored(
     itemId: number,
     database: string,
-    reason: 'not_found' | 'no_identifier' | 'api_error',
+    // `api_error` used to be accepted here and written persistently. It no
+    // longer reaches this call (see `getIgnorePolicy`), so it is gone from the
+    // type rather than left as a dead branch.
+    reason: 'not_found' | 'no_identifier',
     persistent = true,
   ): void {
     if (reason === 'no_identifier') {
@@ -133,8 +237,8 @@ class IgnoredItemsManager {
       return
     }
 
-    // Track 'not_found' and 'api_error' status persistently
-    if (persistent && (reason === 'not_found' || reason === 'api_error')) {
+    // Only an authoritative not-found is stored persistently.
+    if (persistent && reason === 'not_found') {
       const data = this.loadPersistentData()
       const itemKey = itemId.toString()
 
@@ -176,7 +280,7 @@ class IgnoredItemsManager {
     if (data[database]?.[itemKey]) {
       const itemData = data[database][itemKey]
       // Check if enough time has passed to retry based on failure count
-      return !this.shouldRetryItem(itemData.count, itemData.lastChecked)
+      return !this.shouldRetryItem(itemData)
     }
 
     return false
@@ -258,7 +362,7 @@ class IgnoredItemsManager {
 
     if (modified) {
       this.savePersistentData(data)
-      ztoolkit.log('Citation debug - Cleaned up ignored items for non-existent library items')
+      debugLog('Citation debug - Cleaned up ignored items for non-existent library items')
     }
   }
 }
@@ -382,67 +486,60 @@ function getDatabaseColors(): Record<string, string> {
 function refreshItemsTree(): void {
   try {
     // Refresh all item tree columns to pick up new colors
-    const manager = Zotero.ItemTreeManager as { refreshColumns?: () => void }
-    manager.refreshColumns?.()
-    ztoolkit.log('Refreshed columns')
+    Zotero.ItemTreeManager.refreshColumns()
+    debugLog('Refreshed columns')
   } catch (e) {
     ztoolkit.log(`Failed to refresh columns: ${String(e)}`)
   }
 }
 
-// Store references for cleanup
-let themeMediaQueryList: MediaQueryList | null = null
+// Process-wide observer ids. Registered once, not once per window.
 let themePrefObserverId: symbol | null = null
 let colorPrefObserverId: symbol | null = null
 
 /**
- * Register observers for theme and color preference changes
- * Listens to Zotero's theme preference, system theme, and plugin color preference
+ * Per-window system-theme listeners.
+ *
+ * The `change` callback used to be an anonymous function on a
+ * `MediaQueryList` from `Zotero.getMainWindow()`, stored in a single module
+ * global. With two windows the second registration overwrote the first, and the
+ * listener could never be removed because nothing held a reference to it. The
+ * teardown comment claimed the window's own closure handled it, which is only
+ * true for the window that closes.
+ */
+const windowThemeListeners = new Map<Window, { mql: MediaQueryList; onChange: () => void }>()
+
+/**
+ * Register the process-wide preference observers. Idempotent, so a second call
+ * cannot orphan the first registration's ids.
  */
 function registerThemeObservers(): void {
   try {
-    // Observe Zotero's theme preference changes
-    themePrefObserverId = Zotero.Prefs.registerObserver(
+    themePrefObserverId ??= Zotero.Prefs.registerObserver(
       'theme',
       () => {
-        ztoolkit.log('Zotero theme preference changed')
+        debugLog('Zotero theme preference changed')
         refreshItemsTree()
       },
       true,
     )
 
-    // Observe plugin's useColors preference changes (need full pref name)
-    colorPrefObserverId = Zotero.Prefs.registerObserver(
+    colorPrefObserverId ??= Zotero.Prefs.registerObserver(
       `${addon.data.config.prefsPrefix}.useColors`,
       () => {
-        ztoolkit.log('Plugin color preference changed')
+        debugLog('Plugin color preference changed')
         refreshItemsTree()
       },
       true,
     )
 
-    // Observe system theme changes via matchMedia
-    const win = Zotero.getMainWindow()
-    if (win?.matchMedia) {
-      const mql = win.matchMedia('(prefers-color-scheme: dark)')
-      if (mql) {
-        themeMediaQueryList = mql
-        mql.addEventListener('change', () => {
-          ztoolkit.log('System theme changed')
-          refreshItemsTree()
-        })
-      }
-    }
-
-    ztoolkit.log('Theme and color observers registered')
+    debugLog('Theme and color observers registered')
   } catch (e) {
     ztoolkit.log(`Failed to register theme observers: ${String(e)}`)
   }
 }
 
-/**
- * Unregister theme observers (call on shutdown)
- */
+/** Unregister the process-wide preference observers, and every window listener. */
 function unregisterThemeObservers(): void {
   try {
     if (themePrefObserverId) {
@@ -453,20 +550,42 @@ function unregisterThemeObservers(): void {
       Zotero.Prefs.unregisterObserver(colorPrefObserverId)
       colorPrefObserverId = null
     }
-    // MediaQueryList listeners are automatically cleaned up when the window closes
-    themeMediaQueryList = null
-    ztoolkit.log('Theme observers unregistered')
+    for (const win of [...windowThemeListeners.keys()]) {
+      unregisterWindowThemeListener(win)
+    }
+    debugLog('Theme observers unregistered')
   } catch (e) {
     ztoolkit.log(`Failed to unregister theme observers: ${String(e)}`)
   }
 }
 
-function insertBeforeMatch(arr: string[], pattern: RegExp, newItem: string): void {
-  const index = arr.findIndex((item) => pattern.test(item))
-  if (index !== -1) {
-    arr.splice(index, 0, newItem)
-  } else {
-    arr.push(newItem) // If no match, append at the end
+/** Start listening for system theme changes in one window. */
+function registerWindowThemeListener(win: Window): void {
+  try {
+    if (windowThemeListeners.has(win) || typeof win.matchMedia !== 'function') return
+    const mql = win.matchMedia('(prefers-color-scheme: dark)')
+    if (!mql) return
+    // Named, and retained per window, so it can actually be removed.
+    const onChange = () => {
+      debugLog('System theme changed')
+      refreshItemsTree()
+    }
+    mql.addEventListener('change', onChange)
+    windowThemeListeners.set(win, { mql, onChange })
+  } catch (e) {
+    ztoolkit.log(`Failed to register window theme listener: ${String(e)}`)
+  }
+}
+
+/** Stop listening in one window, leaving any other window untouched. */
+function unregisterWindowThemeListener(win: Window): void {
+  const entry = windowThemeListeners.get(win)
+  if (!entry) return
+  windowThemeListeners.delete(win)
+  try {
+    entry.mql.removeEventListener('change', entry.onChange)
+  } catch (e) {
+    ztoolkit.log(`Failed to remove window theme listener: ${String(e)}`)
   }
 }
 
@@ -479,62 +598,30 @@ class Helpers {
   static getAllItemIdentifiers(item: Zotero.Item): ItemIdentifier[] {
     const identifiers: ItemIdentifier[] = []
 
-    // Regex for extracting arXiv IDs from text fields (handles "arXiv:0803.3042" or "0803.3042")
-    const arXivIdRegex = /(?:arXiv:\s*)?([a-z-]+\/\d+|\d+\.\d+)/i
-
-    // Regex for extracting arXiv IDs from URLs (handles "http://arxiv.org/abs/0803.3042")
-    const arXivUrlRegex = /arxiv\.org\/abs\/([a-z-]+\/\d+|\d+\.\d+)/i
-
-    // Check DOI field first (highest priority)
-    const doi = item.getField('DOI')
+    // Check DOI field first (highest priority). Normalization strips `doi:`
+    // prefixes and resolver URLs that users paste into the field, and rejects
+    // values that are not DOIs at all -- previously the raw field content went
+    // straight into a provider URL.
+    const doi = normalizeDoi(item.getField('DOI') || '')
     if (doi) {
       identifiers.push({ type: 'doi', id: doi, source: 'DOI' })
     }
 
-    // Check archiveID field (primary field for preprint identifiers)
-    const archiveID = item.getField('archiveID')
-    if (archiveID) {
-      const arXivMatch = arXivIdRegex.exec(archiveID)
-      if (arXivMatch) {
-        identifiers.push({ type: 'arxiv', id: arXivMatch[1], source: 'archiveID' })
+    // arXiv IDs appear in several fields, in no consistent format. The order
+    // here is the documented resolution order (see README).
+    const pushArxiv = (raw: string | undefined, source: string, extract: (text: string) => string | null): void => {
+      if (!raw) return
+      const id = extract(raw)
+      if (id) {
+        identifiers.push({ type: 'arxiv', id, source })
       }
     }
 
-    // Check reportNumber field (often used for arXiv IDs)
-    const reportNumber = item.getField('reportNumber')
-    if (reportNumber) {
-      const arXivMatch = arXivIdRegex.exec(reportNumber)
-      if (arXivMatch) {
-        identifiers.push({ type: 'arxiv', id: arXivMatch[1], source: 'reportNumber' })
-      }
-    }
-
-    // Check for arXiv ID in Extra field
-    const extra = item.getField('extra')
-    if (extra) {
-      const arXivMatch = arXivIdRegex.exec(extra)
-      if (arXivMatch) {
-        identifiers.push({ type: 'arxiv', id: arXivMatch[1], source: 'extra' })
-      }
-    }
-
-    // Check URL field for arXiv URLs
-    const url = item.getField('url')
-    if (url) {
-      const urlArXivMatch = arXivUrlRegex.exec(url)
-      if (urlArXivMatch) {
-        identifiers.push({ type: 'arxiv', id: urlArXivMatch[1], source: 'url' })
-      }
-    }
-
-    // Check callNumber field (sometimes used for archive identifiers)
-    const callNumber = item.getField('callNumber')
-    if (callNumber) {
-      const arXivMatch = arXivIdRegex.exec(callNumber)
-      if (arXivMatch) {
-        identifiers.push({ type: 'arxiv', id: arXivMatch[1], source: 'callNumber' })
-      }
-    }
+    pushArxiv(item.getField('archiveID'), 'archiveID', extractArxivId)
+    pushArxiv(item.getField('reportNumber'), 'reportNumber', extractArxivId)
+    pushArxiv(item.getField('extra'), 'extra', extractArxivId)
+    pushArxiv(item.getField('url'), 'url', extractArxivIdFromUrl)
+    pushArxiv(item.getField('callNumber'), 'callNumber', extractArxivId)
 
     return identifiers
   }
@@ -553,7 +640,7 @@ class Helpers {
     const databaseOrder = getPref('databaseOrder') || 'crossref'
     const databaseArray = databaseOrder.split(',').map((db: string) => db.trim())
     if (databaseArray.length === 0) {
-      ztoolkit.log('Citation debug - No databases configured in preferences')
+      debugLog('Citation debug - No databases configured in preferences')
     }
     return databaseArray
   }
@@ -567,7 +654,7 @@ class Helpers {
     } else if (Array.isArray(operations)) {
       configured = operations.map((db: string) => db.trim())
     } else {
-      ztoolkit.log('Citation debug - No databases found')
+      debugLog('Citation debug - No databases found')
       return []
     }
     // Drop databases this runtime can't support (see effectiveDatabases).
@@ -593,64 +680,35 @@ class Core {
       extra = ''
     }
 
-    ztoolkit.log('Citation debug - Setting citation count for item:', item.id, 'count:', data)
-    ztoolkit.log('Citation debug - Original Extra field:', extra)
+    debugLog('Citation debug - Setting citation count for item:', item.id, 'count:', data)
+    debugLog('Citation debug - Original Extra field:', extra)
 
     const extras = extra.split('\n')
 
     const dbTitles: string[] = data.map((d) => d.title.trim())
 
-    const titlePattern = `(?:${dbTitles.join('|')})`
-
-    const patt_this = new RegExp(`^Citations: *\\d+ *\\(${titlePattern}\\) *\\[\\d{4}-\\d{1,2}-\\d{1,2}\\]`, 'i') ///REGEXP
-
-    const patt0 = new RegExp(`^Citation *Count: *\\d+ *\\(${titlePattern}\\) *\\[\\d{4}-\\d{1,2}-\\d{1,2}\\]`, 'i')
-    const patt1 = new RegExp(`^Citations \\(${titlePattern}\\): \d+`, 'i')
-    const patt2 = new RegExp(`^\\d+ citations \\(${titlePattern}\\)`, 'i')
-    const patt3 = new RegExp(`^\\d+ citations \\(${titlePattern}\\) \\[\\d{4}-\\d{1,2}-\\d{1,2}\\]`, 'i')
-    const patt_old = new RegExp(
-      '^\\d+ citations \\((?:Crossref\\/DOI|Inspire\\/DOI|Inspire\\/arXiv|Semantic Scholar\\/DOI|Semantic Scholar\\/arXiv)\\) \\[\\d{4}-\\d{1,2}-\\d{1,2}\\]',
-      'i',
-    )
-
-    const patterns: RegExp[] = [patt_this, patt0, patt1, patt2, patt3, patt_old]
-
-    // Remove old lines that match any of the patterns
-    const filteredExtras: string[] = extras.filter((line) => {
-      // const matches = patt0.test(ex) || patt1.test(ex) || patt2.test(ex) || patt3.test(ex) || patt_old.test(ex)
-      let match = false
-
-      for (const pattern of patterns) {
-        if (pattern.test(line)) {
-          match = true
-          break
-        }
-      }
-
-      if (match) {
-        ztoolkit.log('Citation debug - Removing old entry:', line)
-      }
-      return !match
-    })
+    const { kept: filteredExtras, removed } = stripCitationLines(extras, dbTitles)
+    for (const line of removed) {
+      debugLog('Citation debug - Removing old entry:', line)
+    }
 
     // Citation stamps are stored as YYYY-MM-DD and parsed by citationAutoupdate.
     const date = Temporal.Now.plainDateISO().toString()
 
     // Add new counts
     for (const { title, count } of data) {
-      const newEntry = `Citations: ${count} (${title}) [${date}]` ///REGEXP
+      const newEntry = formatCitationLine(title, count, date)
 
-      // Insert as low as possible but before the BBT citation
-      const bbtcitekeypattern = new RegExp('^Citation Key: \\S+', 'i')
-      insertBeforeMatch(filteredExtras, bbtcitekeypattern, newEntry)
-      ztoolkit.log('Citation debug - Added new entry:', newEntry)
+      // Insert as low as possible but before the BBT citation key
+      insertBeforeMatch(filteredExtras, CITATION_KEY_PATTERN, newEntry)
+      debugLog('Citation debug - Added new entry:', newEntry)
     }
 
     // Join and set
     const newExtra = filteredExtras.join('\n')
     item.setField('extra', newExtra)
     await item.saveTx()
-    ztoolkit.log('Citation debug - New Extra field:', newExtra)
+    debugLog('Citation debug - New Extra field:', newExtra)
   }
 
   /**
@@ -677,8 +735,11 @@ class Core {
 
     for (const tag_ of operationsIncluded) {
       const tagName = getOperationName(tag_)
-      const patt0 = new RegExp(`^Citations: *(\\d+) *\\(${tagName}\\) *\\[\\d{4}-\\d{1,2}-\\d{1,2}\\]`, 'i') ///REGEXP
-      const patt1 = new RegExp(`^Citations: *(\\d+) *\\(${tagName}\\)`, 'i') ///REGEXP
+      // Escaped: display names come from FTL. This runs in the column paint
+      // path, where an unbalanced paren would throw once per rendered cell.
+      const safeTag = escapeRegExp(tagName)
+      const patt0 = new RegExp(`^Citations: *(\\d+) *\\(${safeTag}\\) *\\[\\d{4}-\\d{1,2}-\\d{1,2}\\]`, 'i') ///REGEXP
+      const patt1 = new RegExp(`^Citations: *(\\d+) *\\(${safeTag}\\)`, 'i') ///REGEXP
 
       for (const ex of extras) {
         let match = patt0.exec(ex)
@@ -718,16 +779,6 @@ class Core {
 
 class DBInterface {
   /**
-   * Get citation count from Crossref
-   * @param item Zotero item
-   * @returns Citation count or -1 if not found/error
-   */
-  static async getCrossrefCount(item: Zotero.Item): Promise<number> {
-    const result = await this.getCrossrefCountEnhanced(item)
-    return result.count
-  }
-
-  /**
    * Get citation count from Crossref with enhanced status information
    * @param item Zotero item
    * @returns LookupResult with count and status
@@ -735,96 +786,99 @@ class DBInterface {
   static async getCrossrefCountEnhanced(item: Zotero.Item): Promise<LookupResult> {
     const identifier = Helpers.getItemIdentifier(item)
     if (identifier?.type !== 'doi') {
-      ztoolkit.log('Citation debug - No DOI found for item:', item.id)
+      debugLog('Citation debug - No DOI found for item:', item.id)
       return { count: -1, status: 'no_identifier', message: 'No DOI found' }
     }
-    const edoi = encodeURIComponent(identifier.id)
-    ztoolkit.log('Citation debug - Encoded DOI:', edoi)
+    const edoi = encodeIdentifierPath(identifier.id)
+    debugLog('Citation debug - Encoded DOI:', edoi)
 
     // Apply adaptive rate limiting
     await RateLimitManager.waitForRateLimit('crossref')
 
-    let response: any = null
+    const style = 'vnd.citationstyles.csl+json'
 
-    try {
-      const style = 'vnd.citationstyles.csl+json'
-      const xform = `transform/application/${style}`
-      const url = `https://api.crossref.org/works/${edoi}/${xform}`
-      ztoolkit.log('Citation debug - Fetching from Crossref API:', url)
+    /**
+     * Fetch one endpoint and classify the outcome.
+     *
+     * Response status is checked *before* the body is parsed. Previously this
+     * was `fetch(url).then((r) => r.json())` with no `r.ok` check, so a 5xx
+     * carrying a JSON error body parsed cleanly, produced `undefined` for the
+     * count field, and was reported as `not_found` -- which the ignore cache
+     * then persisted for up to 180 days.
+     */
+    const attempt = async (
+      url: string,
+      init?: RequestInit,
+    ): Promise<{ ok: true; body: unknown } | { ok: false; status: LookupStatus; message: string }> => {
+      let response: Response
+      try {
+        response = await lookupFetch(url, init)
+      } catch (err) {
+        debugLog('Citation debug - Crossref request failed:', err)
+        return { ok: false, status: classifyThrown(), message: 'Network request failed' }
+      }
 
-      response = await fetch(url)
-        .then((response) => {
-          ztoolkit.log('Citation debug - Crossref API response status:', response.status)
-          return response.json()
-        })
-        .catch((error) => {
-          ztoolkit.log('Citation debug - Crossref API fetch error:', error)
-          return null
-        })
+      debugLog('Citation debug - Crossref response status:', response.status)
 
-      if (response === null) {
-        ztoolkit.log('Citation debug - Crossref API failed, trying DOI.org')
-        const url = `https://doi.org/${edoi}`
-        const doiResponse = await fetch(url, {
-          headers: {
-            Accept: `application/${style}`,
-          },
-        })
-
-        if (doiResponse.status === 404) {
-          return { count: 0, status: 'not_found', message: 'DOI not found in Crossref' }
-        }
-
-        if (doiResponse.status === 429) {
+      if (!response.ok) {
+        const status = classifyHttpStatus(response.status)
+        // 429 handling used to exist only on the DOI.org fallback, so the
+        // primary endpoint never backed off.
+        if (status === 'rate_limited') {
           RateLimitManager.handleRateLimit('crossref')
-          return { count: -1, status: 'rate_limited', message: 'API rate limit exceeded' }
         }
-
-        response = await doiResponse.json().catch((error) => {
-          ztoolkit.log('Citation debug - DOI.org fetch error:', error)
-          return null
-        })
+        return { ok: false, status, message: `HTTP ${response.status}` }
       }
 
-      if (response === null) {
-        // Something went wrong
-        ztoolkit.log('Citation debug - Both API requests failed')
-        return { count: -1, status: 'api_error', message: 'API requests failed' }
+      try {
+        return { ok: true, body: await response.json() }
+      } catch (err) {
+        debugLog('Citation debug - Crossref body parse failed:', err)
+        return { ok: false, status: classifyThrown(), message: 'Malformed response body' }
       }
-
-      ztoolkit.log('Citation debug - API response:', JSON.stringify(response).substring(0, 500) + '...')
-
-      const count: unknown = response['is-referenced-by-count']
-      if (count === undefined) {
-        ztoolkit.log('Citation debug - No is-referenced-by-count field in response')
-        return { count: 0, status: 'not_found', message: 'No citation count field in response' }
-      }
-      if (typeof count === 'number') {
-        ztoolkit.log('Citation debug - is-referenced-by-count is not a number:', count)
-        RateLimitManager.handleSuccess('crossref')
-        return { count, status: 'success' }
-      }
-      if (typeof count === 'string') {
-        ztoolkit.log('Citation debug - is-referenced-by-count is a string:', count)
-        ztoolkit.log('Citation debug - Citation count from API:', count)
-        RateLimitManager.handleSuccess('crossref')
-        return { count: parseInt(count), status: 'success' }
-      }
-      return { count: -1, status: 'api_error', message: 'Invalid response format' }
-    } catch (err) {
-      ztoolkit.log('Error getting citation count from Crossref', err)
-      return { count: -1, status: 'api_error', message: (err as Error).message }
     }
-  }
 
-  /**
-   * Get citation count from INSPIRE
-   * @param item Zotero item
-   * @returns Citation count or -1 if not found/error
-   */
-  static async getInspireCount(item: Zotero.Item): Promise<number> {
-    const result = await this.getInspireCountEnhanced(item)
-    return result.count
+    const primary = await attempt(`https://api.crossref.org/works/${edoi}/transform/application/${style}`, {
+      headers: REQUEST_HEADERS,
+    })
+
+    let outcome = primary
+    if (!outcome.ok && outcome.status !== 'not_found') {
+      // A definite 404 is the provider's answer; anything else is worth a
+      // second opinion from the DOI resolver.
+      debugLog('Citation debug - Crossref API unavailable, trying DOI.org')
+      await RateLimitManager.waitForRateLimit('crossref')
+      outcome = await attempt(`https://doi.org/${edoi}`, {
+        headers: { ...REQUEST_HEADERS, Accept: `application/${style}` },
+      })
+    }
+
+    if (!outcome.ok) {
+      return { count: outcome.status === 'not_found' ? 0 : -1, status: outcome.status, message: outcome.message }
+    }
+
+    const body = outcome.body
+    if (typeof body !== 'object' || body === null) {
+      return { count: -1, status: 'transient_error', message: 'Unexpected response shape' }
+    }
+
+    const raw = (body as Record<string, unknown>)['is-referenced-by-count']
+    if (raw === undefined) {
+      // The DOI resolved but carries no count. That is a genuine statement
+      // about the item, unlike a transport failure.
+      debugLog('Citation debug - No is-referenced-by-count field in response')
+      return { count: 0, status: 'not_found', message: 'No citation count field in response' }
+    }
+
+    const count = parseCitationCount(raw)
+    if (count === null) {
+      debugLog('Citation debug - Unusable is-referenced-by-count:', raw)
+      return { count: -1, status: 'api_error', message: 'Invalid citation count in response' }
+    }
+
+    debugLog('Citation debug - is-referenced-by-count:', count)
+    RateLimitManager.handleSuccess('crossref')
+    return { count, status: 'success' }
   }
 
   /**
@@ -835,97 +889,92 @@ class DBInterface {
   static async getInspireCountEnhanced(item: Zotero.Item): Promise<LookupResult> {
     const identifiers = Helpers.getAllItemIdentifiers(item)
     if (identifiers.length === 0) {
-      ztoolkit.log('Citation debug - No DOI or arXiv ID found for item:', item.id)
+      debugLog('Citation debug - No DOI or arXiv ID found for item:', item.id)
       return { count: -1, status: 'no_identifier', message: 'No DOI or arXiv ID found' }
     }
 
-    // Try each identifier until one succeeds
+    // Track *why* the identifiers failed. Previously every failure -- 404,
+    // network error, malformed body -- did the same `continue`, and the loop
+    // then returned `not_found` unconditionally. So an INSPIRE outage was
+    // recorded as "this item has no citations" and persisted for months.
+    let sawTransient = false
+    let sawApiError = false
+
     for (const identifier of identifiers) {
-      ztoolkit.log(
-        `Citation debug - Trying INSPIRE with ${identifier.type} ID: ${identifier.id} from ${identifier.source}`,
-      )
+      debugLog(`Citation debug - Trying INSPIRE with ${identifier.type} ID: ${identifier.id} from ${identifier.source}`)
 
       // Apply adaptive rate limiting
       await RateLimitManager.waitForRateLimit('inspire')
 
-      let response: any = null
+      // INSPIRE's external-identifier endpoints are singular. This read `dois`
+      // for years, so every DOI lookup 404'd and success was only ever
+      // reachable through an arXiv identifier.
+      const type = identifier.type === 'doi' ? 'doi' : 'arxiv'
+      // INSPIRE 404s versioned arXiv ids, so the version is dropped here rather
+      // than at extraction. Only on the arXiv branch: a DOI suffix is opaque and
+      // may legitimately end in something shaped like `v2`.
+      const lookupId = identifier.type === 'arxiv' ? stripArxivVersion(identifier.id) : identifier.id
+      const url = `https://inspirehep.net/api/${type}/${encodeIdentifierPath(lookupId)}`
+      debugLog('Citation debug - Fetching from INSPIRE API:', url)
 
+      let response: Response
       try {
-        const type = identifier.type === 'doi' ? 'dois' : 'arxiv'
-        const url = `https://inspirehep.net/api/${type}/${identifier.id}`
-        ztoolkit.log('Citation debug - Fetching from INSPIRE API:', url)
+        response = await lookupFetch(url, { headers: REQUEST_HEADERS })
+      } catch (err) {
+        debugLog(`Citation debug - INSPIRE request failed for ${identifier.id}:`, err)
+        sawTransient = true
+        continue
+      }
 
-        const fetchResponse = await fetch(url)
-
-        if (fetchResponse.status === 404) {
-          ztoolkit.log(
-            `Citation debug - ${identifier.type} ID ${identifier.id} not found in INSPIRE, trying next identifier`,
-          )
-          continue
-        }
-
-        if (fetchResponse.status === 429) {
+      if (!response.ok) {
+        const status = classifyHttpStatus(response.status)
+        if (status === 'rate_limited') {
           RateLimitManager.handleRateLimit('inspire')
           return { count: -1, status: 'rate_limited', message: 'API rate limit exceeded' }
         }
-
-        response = await fetchResponse.json().catch((error) => {
-          ztoolkit.log('Citation debug - INSPIRE API fetch error:', error)
-          return null
-        })
-
-        if (response === null) {
-          ztoolkit.log(
-            `Citation debug - INSPIRE API request failed for ${identifier.type} ID ${identifier.id}, trying next identifier`,
-          )
-          continue
-        }
-
-        ztoolkit.log('Citation debug - INSPIRE API response:', JSON.stringify(response).substring(0, 500) + '...')
-
-        const count = response?.metadata?.citation_count
-        if (count === undefined) {
-          ztoolkit.log(
-            `Citation debug - No citation_count field in INSPIRE response for ${identifier.type} ID ${identifier.id}, trying next identifier`,
-          )
-          continue
-        }
-        if (typeof count === 'number') {
-          ztoolkit.log(
-            `Citation debug - INSPIRE citation count: ${count} (found using ${identifier.type} ID ${identifier.id} from ${identifier.source})`,
-          )
-          RateLimitManager.handleSuccess('inspire')
-          return { count, status: 'success' }
-        }
-        if (typeof count === 'string') {
-          ztoolkit.log(
-            `Citation debug - INSPIRE citation count (string): ${count} (found using ${identifier.type} ID ${identifier.id} from ${identifier.source})`,
-          )
-          RateLimitManager.handleSuccess('inspire')
-          return { count: parseInt(count), status: 'success' }
-        }
-        ztoolkit.log(
-          `Citation debug - Invalid response format for ${identifier.type} ID ${identifier.id}, trying next identifier`,
-        )
-        continue
-      } catch (err) {
-        ztoolkit.log(`Error getting citation count from INSPIRE for ${identifier.type} ID ${identifier.id}:`, err)
+        if (status === 'transient_error') sawTransient = true
+        else if (status === 'api_error') sawApiError = true
+        debugLog(`Citation debug - INSPIRE HTTP ${response.status} for ${identifier.id} (${status})`)
         continue
       }
+
+      let body: unknown
+      try {
+        body = await response.json()
+      } catch (err) {
+        debugLog(`Citation debug - INSPIRE body parse failed for ${identifier.id}:`, err)
+        sawTransient = true
+        continue
+      }
+
+      const metadata = (body as { metadata?: Record<string, unknown> } | null)?.metadata
+      const count = parseCitationCount(metadata?.citation_count)
+      if (count === null) {
+        debugLog(`Citation debug - No usable citation_count for ${identifier.id}, trying next identifier`)
+        // The record resolved but carries no count: authoritative for this
+        // identifier, so it does not set a failure flag.
+        continue
+      }
+
+      debugLog(
+        `Citation debug - INSPIRE citation count: ${count} (via ${identifier.type} ${identifier.id} from ${identifier.source})`,
+      )
+      RateLimitManager.handleSuccess('inspire')
+      return { count, status: 'success' }
     }
 
-    // All identifiers failed
+    // Precedence mirrors semanticScholarClient.core: a transient failure
+    // anywhere outranks a 404 elsewhere, because the item might well be present
+    // behind the identifier that could not be checked. Only when *every* usable
+    // identifier gave an authoritative answer is `not_found` justified -- and
+    // only that answer is allowed to persist.
+    if (sawTransient) {
+      return { count: -1, status: 'transient_error', message: 'INSPIRE lookup failed for every identifier' }
+    }
+    if (sawApiError) {
+      return { count: -1, status: 'api_error', message: 'INSPIRE rejected every identifier' }
+    }
     return { count: 0, status: 'not_found', message: 'No valid identifiers found in INSPIRE' }
-  }
-
-  /**
-   * Get citation count from Semantic Scholar
-   * @param item Zotero item
-   * @returns Citation count or -1 if not found/error
-   */
-  static async getSemanticScholarCount(item: Zotero.Item): Promise<number> {
-    const result = await this.getSemanticScholarCountEnhanced(item)
-    return result.count
   }
 
   /**
@@ -1024,7 +1073,7 @@ function updateItems(items: Zotero.Item[], operations?: string[] | string, silen
   if (databases.length === 0) {
     // Nothing configured, or nothing this runtime supports. Bail out before the
     // progress window opens; the user entry points show the degraded notice.
-    ztoolkit.log('Citation debug - No effective databases; skipping update queue')
+    debugLog('Citation debug - No effective databases; skipping update queue')
     return
   }
 
@@ -1101,18 +1150,18 @@ async function updateItem(
   isAutoUpdate: boolean = false,
 ): Promise<boolean> {
   try {
-    ztoolkit.log('Citation debug - Updating item:', item.id, 'title:', item.getField('title'))
+    debugLog('Citation debug - Updating item:', item.id, 'title:', item.getField('title'))
 
     const databases = Helpers.getDatabaseArray(operations)
     if (databases.length === 0) {
-      ztoolkit.log('Citation debug - No databases configured, skipping item:', item.id)
+      debugLog('Citation debug - No databases configured, skipping item:', item.id)
       return false
     }
 
     const data: CountArray = []
     for (const operation of databases) {
       if (isAutoUpdate && IgnoredItemsManager.isIgnored(item.id, operation, true)) {
-        ztoolkit.log(`Citation debug - Skipping ${operation} for item ${item.id} (marked as ignored)`)
+        debugLog(`Citation debug - Skipping ${operation} for item ${item.id} (marked as ignored)`)
         continue
       }
 
@@ -1138,15 +1187,16 @@ async function updateItem(
         IgnoredItemsManager.clearIgnoredItem(item.id, operation)
         data.push({ title: displayName, count: result.count })
       } else {
-        // Persist not-found results and auto-update API errors; cache missing identifiers for this session.
+        // Only an authoritative not-found is persistent; a missing identifier is
+        // cached for the session. Provider failures record nothing -- see
+        // `getIgnorePolicy`.
         const policy = getIgnorePolicy(result.status, isAutoUpdate)
         if (policy === 'session') {
           IgnoredItemsManager.markAsIgnored(item.id, operation, 'no_identifier', false)
         } else if (policy === 'persistent') {
-          const reason = result.status === 'not_found' ? 'not_found' : 'api_error'
-          IgnoredItemsManager.markAsIgnored(item.id, operation, reason, true)
+          IgnoredItemsManager.markAsIgnored(item.id, operation, 'not_found', true)
         }
-        ztoolkit.log(`Citation debug - ${operation} for item ${item.id}: ${result.status} (${result.message ?? ''})`)
+        debugLog(`Citation debug - ${operation} for item ${item.id}: ${result.status} (${result.message ?? ''})`)
       }
     }
 
@@ -1178,7 +1228,7 @@ class UIRegistrar {
    * Register custom column to display citation counts
    */
   static registerCitationColumn() {
-    ztoolkit.log('Citation debug - Registering citation count column')
+    debugLog('Citation debug - Registering citation count column')
     Zotero.ItemTreeManager.registerColumn({
       pluginID: addon.data.config.addonID,
       dataKey: 'citationCount',
@@ -1188,53 +1238,16 @@ class UIRegistrar {
       flex: 0,
       zoteroPersist: ['width', 'ordinal', 'hidden', 'sortDirection'],
       dataProvider: (item: Zotero.Item) => {
-        ztoolkit.log('Citation debug - Data provider called for item:', item.id)
-
-        // Debug the raw item info
-        try {
-          ztoolkit.log('Citation debug - Item fields available:', Object.keys(item))
-          ztoolkit.log('Citation debug - Item type:', item.itemTypeID, item.itemType)
-
-          // // Log all available fields for this item
-          // const fields = Zotero.ItemFields.getItemTypeFields(item.itemTypeID)
-          // ztoolkit.log('Citation debug - Available fields:', fields)
-
-          // // Check if the item has extra field data
-          // if (item.hasOwnProperty('_extraFields')) {
-          //   ztoolkit.log('Citation debug - Extra fields:', JSON.stringify(item._extraFields))
-          // } else {
-          //   ztoolkit.log('Citation debug - Extra fields - not found')
-          // }
-
-          // // Check for the DCounts field mentioned in the error
-          // if (item.hasOwnProperty('_fieldData')) {
-          //   ztoolkit.log('Citation debug - Field data:', JSON.stringify(item._fieldData))
-          // } else {
-          //   ztoolkit.log('Citation debug - Field data - not found')
-          // }
-
-          // Check for parent item if this is a child item
-          if (item.isAttachment() || item.isNote()) {
-            const parentItemID = item.parentItemID
-            ztoolkit.log('Citation debug - Parent item ID:', parentItemID)
-            if (parentItemID) {
-              const parentItem = Zotero.Items.get(parentItemID)
-              if (parentItem) {
-                ztoolkit.log('Citation debug - Parent item type:', parentItem.itemTypeID)
-              }
-            }
-          }
-        } catch (error) {
-          ztoolkit.log('Citation debug - Error inspecting item:', error)
-        }
-
+        // This runs once per visible row on every redraw, so it must stay cheap
+        // and silent. It previously logged `Object.keys(item)` and the item type
+        // on every call, and fetched the parent item from the database for
+        // attachments and notes -- all purely diagnostic.
         const result = Core.getCitationCountForColumn(item)
         // Return JSON string that renderCell will parse
         return result ? JSON.stringify(result) : ''
       },
       // iconPath: 'chrome://zotero/skin/citations.png',
       renderCell(index, data: any, column, isFirstColumn, doc) {
-        ztoolkit.log('Citation debug - Rendering cell with data:', data)
         const span = doc.createElement('span')
         span.className = `cell ${column.className}`
         span.style.textAlign = 'center'
@@ -1287,23 +1300,30 @@ class UIRegistrar {
         return span
       },
     })
-    ztoolkit.log('Citation debug - Column registration complete')
+    debugLog('Citation debug - Column registration complete')
   }
 
   /**
    * Register the notifier to detect new items
    */
   static registerNotifier() {
-    const notifierID = Zotero.Notifier.registerObserver(notifierCallback, ['item'])
+    // Registered once for the process, not once per window.
+    if (notifierID !== null) return
+    notifierID = Zotero.Notifier.registerObserver(notifierCallback, ['item'])
+  }
 
-    // Unregister when the addon is disabled/uninstalled
-    Zotero.Plugins.addObserver({
-      shutdown: ({ id }: { id: string }) => {
-        if (id === addon.data.config.addonID) {
-          Zotero.Notifier.unregisterObserver(notifierID)
-        }
-      },
-    })
+  /**
+   * Unregister the item notifier.
+   *
+   * This used to be driven by a `Zotero.Plugins` observer that watched for this
+   * plugin's own shutdown -- an observer that was itself never removed. The
+   * shutdown hook already runs on that path, so the indirection only added a
+   * leak.
+   */
+  static unregisterNotifier() {
+    if (notifierID === null) return
+    Zotero.Notifier.unregisterObserver(notifierID)
+    notifierID = null
   }
 
   /**
@@ -1320,11 +1340,21 @@ class UIRegistrar {
     unregisterThemeObservers()
   }
 
+  /** Per-window system-theme listener, registered on window load. */
+  static registerWindowThemeListener(win: Window) {
+    registerWindowThemeListener(win)
+  }
+
+  /** Per-window system-theme listener, removed on window unload. */
+  static unregisterWindowThemeListener(win: Window) {
+    unregisterWindowThemeListener(win)
+  }
+
   /**
    * Register a context menu item to update citation counts for selected items
    */
   static registerCitationCountMenuItem() {
-    ;(Zotero as any).MenuManager.registerMenu({
+    Zotero.MenuManager.registerMenu({
       menuID: `${addon.data.config.addonID}-update-citations`,
       pluginID: addon.data.config.addonID,
       target: 'main/library/item',
@@ -1354,7 +1384,7 @@ class UIRegistrar {
    * Register a menubar item to retally outdated item citations
    */
   static registerRetallyCitationsMenuItem() {
-    ;(Zotero as any).MenuManager.registerMenu({
+    Zotero.MenuManager.registerMenu({
       menuID: `${addon.data.config.addonID}-retally-citations`,
       pluginID: addon.data.config.addonID,
       target: 'main/menubar/tools',
@@ -1381,67 +1411,6 @@ class UX {
     const zoteroPane = Zotero.getActiveZoteroPane()
     if (!zoteroPane) return
     const items = zoteroPane.getSelectedItems()
-
-    // // Log diagnostic info about the selected items
-    // ztoolkit.log('Citation debug - Selected items count:', items.length)
-    // for (const item of items) {
-    //   ztoolkit.log('Citation debug - Selected item ID:', item.id, 'Type:', item.itemType)
-
-    //   // Check Extra field content
-    //   const extra = item.getField('extra')
-    //   ztoolkit.log('Citation debug - Extra field content:', extra)
-
-    //   // Check for the DCounts field mentioned in the error
-    //   try {
-    //     // Attempt to access raw item data to debug the "DCounts" field
-    //     const itemData = item.toJSON()
-    //     ztoolkit.log('Citation debug - Item JSON data:', JSON.stringify(itemData).substring(0, 500))
-
-    //     // Check for custom fields/properties
-    //     ztoolkit.log('Citation debug - Item field names:', Object.getOwnPropertyNames(item))
-
-    //     // Check if this is a library item
-    //     const libraryID = item.libraryID
-    //     ztoolkit.log('Citation debug - Item library ID:', libraryID)
-
-    //     // Check if the item has a DOI
-    //     const doi = item.getField('DOI')
-    //     ztoolkit.log('Citation debug - Item DOI:', doi)
-    //   } catch (error) {
-    //     ztoolkit.log('Citation debug - Error inspecting selected item:', error)
-    //   }
-    // }
-
-    // Filter for regular items
-    // const regularItems = items.filter((item) => item.isRegularItem())
-    // ztoolkit.log('Citation debug - Regular items count:', regularItems.length)
-
-    // if (regularItems.length === 0) {
-    //   // Show message if no regular items are selected
-    //   new ztoolkit.ProgressWindow('Citation Counts', {
-    //     closeOnClick: true,
-    //   })
-    //     .createLine({
-    //       text: 'No valid items selected for citation count update.',
-    //       type: 'error',
-    //     })
-    //     .show()
-    //     .startCloseTimer(3000)
-    //   return
-    // }
-
-    // Update citation counts for selected items using the existing function
-
-    // new ztoolkit.ProgressWindow('DEBUG', {
-    //   closeOnClick: true,
-    // })
-    //   .createLine({
-    //     text: getPref('databaseOrder'),
-    //     type: 'error',
-    //   })
-    //   .show()
-    //   .startCloseTimer(3000)
-    // return
 
     updateItems(items)
   }

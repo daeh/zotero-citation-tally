@@ -177,7 +177,7 @@ function makeCore(opts: {
     userAgent: 'Citation-Tally/test',
     monotonicNow: () => state.clock,
     nowEpochMs: () => 1_700_000_000_000 + state.clock,
-    createTimeoutSignal: () => new AbortController().signal,
+    createTimeoutSignal: () => ({ signal: new AbortController().signal, dispose: () => {} }),
     combineSignals: (signals) => AbortSignal.any(signals),
     sleep: (ms, signal) => {
       if (signal?.aborted === true) return Promise.reject(new DOMException('Aborted', 'AbortError'))

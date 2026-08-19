@@ -22,12 +22,3 @@ export function getPref<K extends keyof PluginPrefsMap>(key: K) {
 export function setPref<K extends keyof PluginPrefsMap>(key: K, value: PluginPrefsMap[K]) {
   return Zotero.Prefs.set(`${PREFS_PREFIX}.${key}`, value, true)
 }
-
-/**
- * Clear preference value.
- * Wrapper of `Zotero.Prefs.clear`.
- * @param key
- */
-export function clearPref(key: string) {
-  return Zotero.Prefs.clear(`${PREFS_PREFIX}.${key}`, true)
-}

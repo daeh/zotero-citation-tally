@@ -22,9 +22,10 @@ export const SEMANTIC_SCHOLAR_DATABASE = 'semanticscholar'
 
 /**
  * Result for a Semantic Scholar lookup that reaches dispatch while the runtime
- * can't support it. The status is `transient_error` rather than `api_error`
- * because auto-update stores `api_error` as a per-item ignore (see
- * `getIgnorePolicy`), and a runtime limitation says nothing about the item.
+ * can't support it. `transient_error` is the honest classification: the item
+ * was never actually checked. (Neither status is persisted any more -- see
+ * `getIgnorePolicy`, where only an authoritative 404 earns a persistent
+ * entry -- but the distinction still drives logging and retry behaviour.)
  */
 export function semanticScholarUnavailableResult(): LookupResult {
   return { count: -1, status: 'transient_error', message: 'Semantic Scholar is unavailable in this Zotero runtime' }

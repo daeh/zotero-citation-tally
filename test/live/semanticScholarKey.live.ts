@@ -174,7 +174,7 @@ function liveCore(keyState: KeyStateAccess): SemanticScholarClientCore {
     userAgent: USER_AGENT,
     monotonicNow: () => performance.now(),
     nowEpochMs: () => Temporal.Now.instant().epochMilliseconds,
-    createTimeoutSignal: (ms) => AbortSignal.timeout(ms),
+    createTimeoutSignal: (ms) => ({ signal: AbortSignal.timeout(ms), dispose: () => {} }),
     combineSignals: (signals) => AbortSignal.any(signals),
     sleep: (ms, signal) => delay(ms, undefined, { signal }),
     random: () => Math.random(),

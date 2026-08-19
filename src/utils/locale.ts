@@ -13,7 +13,7 @@ function initLocale() {
   // id it can't actually resolve. test/locale.test.ts enforces that ids are unique
   // across the files.
   const l10n = new (typeof Localization === 'undefined' ? ztoolkit.getGlobal('Localization') : Localization)(
-    [`${config.addonRef}-addon.ftl`, `${config.addonRef}-preferences.ftl`, `${config.addonRef}-mainWindow.ftl`],
+    [`${config.addonRef}-addon.ftl`, `${config.addonRef}-preferences.ftl`],
     true,
   )
   addon.data.locale = {

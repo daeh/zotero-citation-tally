@@ -1,10 +1,6 @@
 startup-begin = Citation Tally is loading
 startup-finish = Citation Tally is ready
 startup-progress = [{ $percent }%] { $message }
-menuitem-label = Citation Tally: Helper Examples
-menupopup-label = Citation Tally: Menu
-menuitem-submenulabel = Citation Tally
-menuitem-filemenulabel = Citation Tally: File Menu
 menuitem-update-citation-tallies =
     .label = Update Citation Tallies
 menuitem-retally-outdated-citations =

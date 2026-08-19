@@ -1,12 +1,13 @@
 {
   "name": "zotero-citation-tally",
-  "version": "0.0.17",
+  "version": "0.0.18",
+  "private": true,
   "description": "Plugin that tallies citation counts for Zotero items",
   "author": "Dae Houlihan <dev@daeh.info> (https://daeh.info)",
   "license": "AGPL-3.0",
   "type": "module",
   "engines": {
-    "node": ">=26"
+    "node": ">=26 <27"
   },
   "config": {
     "addonName": "Citation Tally",
@@ -27,12 +28,12 @@
     "start": "zotero-plugin serve",
     "build": "zotero-plugin build && tsc --noEmit && node utils/patch-update-json.mjs",
     "scaffold:release": "zotero-plugin release",
-    "release:build": "yarn build && yarn lint && yarn build && yarn lint",
+    "release:build": "yarn build && yarn lint:check",
     "lint": "NODE_ENV=production && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
     "lint:check": "NODE_ENV=production && prettier --config prettier.config.mjs --check . && eslint --config eslint.config.mjs .",
     "lint:dev": "NODE_ENV=development && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
     "lint:repo": "NODE_ENV=repo && prettier --config prettier.config.mjs --write . && eslint --config eslint.config.mjs --fix .",
-    "scrub": "rm -rf .yarn node_modules yarn.lock .scaffold tsconfig.tsbuildinfo",
+    "scrub": "rm -rf node_modules .scaffold tsconfig.tsbuildinfo .yarn/install-state.gz",
     "update-deps": "yarn set version stable && yarn upgrade-interactive",
     "test": "zotero-plugin test",
     "test:unit": "node --test 'test/**/*.test.ts'",
@@ -43,14 +44,14 @@
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "^5.10.0",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.2.0",
     "@zotero-plugin/eslint-config": "^0.6.10",
-    "eslint": "^10.8.0",
+    "eslint": "^10.8.1",
     "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-import-x": "^4.17.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.65.0",
+    "typescript-eslint": "^8.67.0",
     "zotero-plugin-scaffold": "^0.8.8",
     "zotero-types": "4.1.3"
   },
@@ -58,5 +59,5 @@
     "pdfjs-dist": "npm:^4.10.0",
     "epubjs": "npm:^0.3.93"
   },
-  "packageManager": "yarn@4.17.1"
+  "packageManager": "yarn@4.18.0+sha512.fcb8716fe7cd0eece141ffc18b92193a9df9204c1ba83189c288835223fc0bbe64af473bab0d5e9927a7daeb5caf2bb07eb2787cc9338ca040ea125f2a1f2f7e"
 }

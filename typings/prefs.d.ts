@@ -16,6 +16,7 @@ declare namespace _ZoteroTypes {
       "ignoredItems": string;
       "rateLimits": string;
       "semanticScholarApiKey": string;
+      "debugLogging": boolean;
     };
   }
 }
