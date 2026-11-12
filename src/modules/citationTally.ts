@@ -32,8 +32,8 @@ import { notifySemanticScholarUnavailable } from './degradedNotice'
 import { getIgnorePolicy } from './ignorePolicy'
 import { getSemanticScholarClient, isSemanticScholarAvailable } from './semanticScholarClient'
 
-import type { ItemIdentifier, LookupResult, LookupStatus } from './citationTypes'
 import type { IgnoreEntries, IgnoreRecord } from '../utils/ignoreStore'
+import type { ItemIdentifier, LookupResult, LookupStatus } from './citationTypes'
 
 // Semantic Scholar uses its own scheduler and has no entry in this millisecond table.
 const DEFAULT_RATE_LIMITS: Record<string, number> = {

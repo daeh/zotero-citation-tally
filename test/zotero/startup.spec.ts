@@ -12,8 +12,12 @@
 import { config } from '../../package.json'
 
 declare const Zotero: any
+declare const Services: any
 declare function describe(title: string, fn: (this: { timeout: (ms: number) => void }) => void): void
 declare function it(title: string, fn: () => void | Promise<void>): void
+
+/** Installation-wide links that zotero-plugin-toolkit ≤5 registered; this plugin uses neither. */
+const TOOLKIT_BRIDGE_LINKS = ['zotero://plugin', 'zotero://ztoolkit-debug']
 
 function ok(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -21,6 +25,12 @@ function ok(condition: unknown, message: string): asserts condition {
 
 describe('Citation Tally runtime', function () {
   this.timeout(30000)
+
+  it('registers no zotero-plugin-toolkit bridge links', () => {
+    const registered = Object.keys(Services.io.getProtocolHandler('zotero').wrappedJSObject._extensions)
+    const found = TOOLKIT_BRIDGE_LINKS.filter((key) => registered.includes(key))
+    ok(found.length === 0, `toolkit bridge links registered: ${found.join(', ')}`)
+  })
 
   it('initializes fully', () => {
     const addon = Zotero[config.addonInstance]

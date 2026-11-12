@@ -24,10 +24,10 @@ import {
   selectAttemptAuthority,
 } from './semanticScholarKeyState'
 
+import type { NormalizedApiKey } from '../utils/apiKey'
 import type { ItemIdentifier, LookupResult, ValidationStatus } from './citationTypes'
 import type { AttemptMode, KeyStateAccess, S2CoreDeps } from './semanticScholarClient.core'
 import type { KeyRef, KeyState, RejectionAttempt, RejectionDisposition } from './semanticScholarKeyState'
-import type { NormalizedApiKey } from '../utils/apiKey'
 
 const PREF_KEY = 'semanticScholarApiKey' as const
 const RATE_LIMITS_PREF = 'rateLimits' as const

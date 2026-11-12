@@ -86,7 +86,16 @@ jobs:
         # provisions a display and picks a free server number, so it is correct
         # whether or not the image already has one. `xvfb` is preinstalled on
         # ubuntu-24.04 (2:21.1.12-1ubuntu1.6).
-        run: xvfb-run -a yarn test
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/zotero-test.log"
+          xvfb-run -a yarn test 2>&1 | tee "$log"
+          # Scaffold 0.9.4 exits 0 whenever Zotero closes without a failure
+          # count, including when it exits before reporting any result. Require
+          # the reporter's success-form completion line, printed only on the
+          # final `end` event with zero failures.
+          grep -Eq 'Test run completed - [1-9][0-9]* passed$' "$log" \
+            || { echo "::error::The Zotero test run never reported a completed, passing run"; exit 1; }
       - name: Preserve Zotero test profile and logs
         # Note: this cannot fire on a *job*-level `timeout-minutes`, which
         # GitHub reports as `cancelled` rather than `failure`.

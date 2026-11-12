@@ -16,6 +16,7 @@
   },
   "include": [
     "test/**/*.ts",
+    "utils/check-toolkit-bridges.ts",
     "src/modules/citationTypes.ts",
     "src/modules/ignorePolicy.ts",
     "src/modules/preferenceMessages.ts",
